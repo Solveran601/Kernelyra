@@ -1,0 +1,43 @@
+# Kernelyra native core
+
+The released Windows x64 core has deliberate boundaries. It is not a Python
+training loop translated into several languages.
+
+```text
+native/
+├── core/
+│   ├── fortran/     dense training arithmetic: dot, AXPY, gradients, updates
+│   └── zig/         aligned buffers, copy, zero and normalization
+├── bridge/cpp/      compact C ABI, bounded CSV streaming and safe fallback
+├── include/         stable C/C++/Rust-facing ABI header
+├── tools/           safe dataset signature probe
+└── CMakeLists.txt   reproducible native build
+```
+
+Fortran and Zig are the active low-level engine components. For binary
+classification and regression, Fortran executes the entire native train step;
+C++ exposes the ABI, streams batches without loading a whole dataset and keeps
+a conservative fallback for diagnostic comparison. Native multiclass is still
+a partial C++ implementation until its equivalent Fortran kernel is complete.
+Rust, C and C++ consume the ABI directly; Python is only the high-level
+orchestration and optional-framework layer.
+
+End users install a Windows wheel containing `kernelyra_core.dll` and do not
+need a compiler. Source contributors need MinGW g++, gfortran and Zig:
+
+```powershell
+kernelyra native build
+kernelyra native status --json
+```
+
+For a CMake build:
+
+```powershell
+cmake -S native -B native/build -G "MinGW Makefiles"
+cmake --build native/build --config Release
+```
+
+The project intentionally has no handwritten assembly source. CPU-specific
+machine code is emitted by Zig, gfortran and the C++ compiler for the actual
+target; this avoids shipping one fixed ISA implementation that fails on a
+different machine.

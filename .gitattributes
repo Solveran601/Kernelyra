@@ -1,0 +1,10 @@
+# Keep source history deterministic across Windows and CI runners.
+* text=auto eol=lf
+
+# Never apply text normalization to release or native binary artifacts.
+*.dll binary
+*.exe binary
+*.whl binary
+*.zip binary
+*.gz binary
+*.npz binary

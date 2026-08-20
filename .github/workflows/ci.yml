@@ -1,0 +1,146 @@
+name: TrainFlow release gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full_soak:
+        description: Run the required 60-minute Windows release soak
+        type: boolean
+        default: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  clean-source:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python scripts/check_clean_source.py
+
+  lint-typecheck:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev]" -c constraints/release.txt
+      - run: python -m ruff check .
+      - run: python -m mypy src/trainflow
+
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ matrix.python-version }}"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python -B -m pytest -q --cov=trainflow --cov-report=term-missing --cov-fail-under=0
+      - run: python -B scripts/check_coverage.py
+
+  dependency-compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {profile: minimum, python-version: "3.11", constraints: constraints/minimum.txt}
+          - {profile: pinned, python-version: "3.12", constraints: constraints/release.txt}
+          - {profile: latest-compatible, python-version: "3.13", constraints: ""}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "${{ matrix.python-version }}"}
+      - if: matrix.constraints != ''
+        run: python -m pip install ".[dev,mcp]" -c ${{ matrix.constraints }}
+      - if: matrix.constraints == ''
+        run: python -m pip install --upgrade ".[dev,mcp]"
+      - run: python -B -m pytest -q
+
+  security:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python -B -m pytest -q tests/test_security.py tests/test_import_safety.py tests/test_mcp_permissions.py tests/test_failure_modes.py
+      - run: python -m bandit -q -r src/trainflow -x tests
+      - run: python -m pip_audit --strict
+
+  native-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev]" -c constraints/release.txt
+      - run: cmake -S native/cpp -B native/cpp/build
+      - run: cmake --build native/cpp/build --config Release
+      - run: python -B -m pytest -q tests/test_native_probe.py
+
+  daemon-cli-mcp-e2e:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python -B -m pytest -q tests/test_daemon_integration.py tests/test_mcp_stdio.py tests/test_runtime_contracts.py tests/test_auto_terminal.py tests/test_sdk_contracts.py
+
+  package-release:
+    runs-on: windows-latest
+    needs: [clean-source, lint-typecheck, security]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python scripts/release.py check
+      - run: python scripts/release.py build
+      - run: python scripts/release.py verify
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trainflow-release-candidate
+          path: |
+            dist/*
+            RELEASE_MANIFEST.json
+            SHA256SUMS.txt
+
+  quick-soak:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python scripts/soak_test.py --mode quick
+
+  critical-repeat:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python scripts/critical_suite.py --count 10
+
+  full-release-soak:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_soak
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - run: python scripts/soak_test.py --mode full --duration-minutes 60

@@ -1,0 +1,32 @@
+[training]
+# All values are optional. Explicit CLI/Python values override this file.
+target = "label"
+task = "auto"
+backend = "auto"
+profile = "auto"
+batch_size = 64
+max_steps = 5000
+target_metric = 0.93
+cpu = 60
+ram = 60
+gpu = 70
+seed = 42
+learning_rate = 0.001
+weight_decay = 0.0001
+hidden_layers = [128, 64, 32]
+precision = "auto"
+data_workers = 4
+prefetch = 2
+# Quality and anti-degradation controls. Leave omitted for safe automatic values.
+evaluation_interval = 100
+min_improvement = 0.0005
+degradation_margin = 0.03
+degradation_patience = 3
+early_stopping_patience = 18
+target_patience = 3
+
+[mcp.permissions]
+allowed_roots = ["."]
+allow_read = true
+allow_write = false
+allow_delete = false

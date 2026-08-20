@@ -1,0 +1,13 @@
+include CHANGELOG.md CONTRIBUTING.md LICENSE SECURITY.md THIRD_PARTY_NOTICES.md kernelyra.example.toml
+include setup.py
+include worker.py start_worker.bat start_worker.ps1 requirements.txt
+recursive-include docs *.md
+recursive-include examples *.py
+recursive-include scripts *.py
+recursive-include constraints *.txt
+recursive-include tests *.py
+recursive-include native *.cpp *.h *.txt *.md *.zig *.f90
+recursive-include sdks *.h *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.php *.rs *.toml *.lock *.md *.kt *.swift *.rb *.txt
+prune .kernelyra
+prune native/build
+global-exclude __pycache__ *.py[cod] *.sqlite3 *.sqlite3-wal *.sqlite3-shm *.log *.exe *.pdb

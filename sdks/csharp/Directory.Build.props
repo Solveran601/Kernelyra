@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)..\..\.test_workspaces\dotnet\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\..\.test_workspaces\dotnet\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

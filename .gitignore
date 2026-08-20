@@ -1,0 +1,40 @@
+# Runtime state and local artifacts
+.kernelyra/
+.trainflow/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.npz
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+pytest-cache-files-*/
+.test_workspaces/
+.test_runtime_workspace/
+.venv/
+dist/
+build/
+*.egg-info/
+.benchmarks/
+
+# Native build products
+native/cpp/build/
+native/rust/target/
+sdks/rust/target/
+sdks/csharp/bin/
+sdks/csharp/obj/
+*.exe
+*.pdb
+*.mod
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

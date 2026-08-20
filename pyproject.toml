@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kernelyra-ai"
+version = "0.3.0a1"
+description = "Terminal-first adaptive AI training engine and multi-language library"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "Apache-2.0"
+authors = [{name = "Kernelyra contributors"}]
+classifiers = [
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+tensorflow = ["tensorflow>=2.16,<3"]
+torch = ["torch>=2.4,<3"]
+data = ["pandas>=2.2,<4", "pyarrow>=15,<24"]
+full = ["torch>=2.4,<3", "tensorflow>=2.16,<3", "pandas>=2.2,<4", "pyarrow>=15,<24"]
+gateway = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "pydantic>=2.10,<3", "python-multipart>=0.0.18,<1"]
+mcp = ["mcp>=1.28,<2"]
+parquet = ["pyarrow>=15,<24"]
+dev = [
+  "build>=1.2,<2",
+  "twine>=5,<7",
+  "pytest>=8,<10",
+  "pytest-cov>=5,<8",
+  "pytest-repeat>=0.9,<1",
+  "coverage>=7.10.6,<8",
+  "httpx>=0.27,<1",
+  "ruff>=0.9,<1",
+  "mypy>=2.3,<3",
+  "pip-audit>=2.7,<3",
+  "bandit>=1.8,<2",
+  "psutil>=6,<8",
+]
+benchmark = ["psutil>=6,<8", "torch>=2.4,<3", "tensorflow>=2.16,<3"]
+
+[project.scripts]
+kernelyra = "kernelyra.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"kernelyra" = [
+  "py.typed",
+  "native_bin/*.dll",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+pythonpath = ["src"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated.*",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = ["build", "dist", ".test_workspaces"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["E501", "B009", "S101", "S310", "S603", "S607"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+exclude = "^(build|dist|packages)/"
+
+[[tool.mypy.overrides]]
+module = ["numpy.*", "fastapi.*", "uvicorn.*", "mcp.*", "tensorflow", "tensorflow.*", "pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["kernelyra.backends.tensorflow_backend", "kernelyra.ingestion.parquet_ingestor"]
+disable_error_code = ["import-untyped", "no-untyped-call"]
+
+[tool.coverage.run]
+source = ["kernelyra"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
