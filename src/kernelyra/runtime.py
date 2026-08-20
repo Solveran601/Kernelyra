@@ -16,7 +16,10 @@ from .checkpoints import CheckpointManager
 from .errors import ConfigurationError, RunError, RunStateError
 from .hardware import PROFILE_PRESETS, recommend_profile
 from .models import RunInfo
+from .quality import QualityGate
 from .storage import SQLiteStorage
+from .trace import TrainingTrace
+from .tuning import autotune_execution
 
 
 class LifecycleOutcome(str, Enum):
@@ -283,6 +286,53 @@ class TrainingRuntime:
             {"run_id": run.id, "outcome": outcome.value, "status": run.status},
         )
 
+    def _capture_finetune_baseline(
+        self,
+        run: RunInfo,
+        worker: BackendWorker,
+        checkpoint: Path,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Preserve the incoming model before the first fine-tune update."""
+        evaluation = worker.evaluate()
+        self._record_worker_events(run, worker)
+        baseline_metadata = {
+            **metadata,
+            "score": evaluation.score,
+            "step": 0,
+            "schema_version": 3,
+            "kind": "fine_tune_baseline",
+        }
+        worker.save_checkpoint(checkpoint, baseline_metadata)
+        self._record_worker_events(run, worker)
+        info = self.checkpoints.record(checkpoint, baseline_metadata)
+        run.eval_count = 1
+        run.best_score = evaluation.score
+        run.best_step = 0
+        run.environment_manifest = {
+            **run.environment_manifest,
+            "fine_tune_baseline": {"score": evaluation.score, "checkpoint": checkpoint.name},
+        }
+        trace = TrainingTrace.from_metrics(run.metrics)
+        trace.add("fine_tune_baseline", score=evaluation.score, checkpoint=checkpoint.name)
+        run.metrics = {
+            "step": 0,
+            "validation": evaluation.metrics,
+            "baseline": {"score": evaluation.score, "preserved": True},
+            "trace": trace.events,
+            "created_at": time.time(),
+        }
+        run.checkpoint = {
+            "best": {"filename": checkpoint.name, "sha256": info["sha256"], "step": 0},
+        }
+        run.message = f"Fine-tune baseline сохранён: score {evaluation.score:.3f}"
+        self.storage.log_action(
+            "runtime",
+            "finetune.baseline_preserved",
+            {"run_id": run.id, "score": evaluation.score, "checkpoint": checkpoint.name},
+        )
+        self._save_worker_progress(run)
+
     def _train(self, run_id: str) -> LifecycleOutcome:
         run = self.storage.get_run(run_id)
         if not run:
@@ -298,8 +348,19 @@ class TrainingRuntime:
         backend_name = run.effective_backend or run.backend
         total_memory = int(float(self.workspace.hardware.get("ram_gb") or 8) * 1024**3)
         gpu_memory = max(
-            (int(float(item.get("vram_gb") or 0) * 1024) for item in self.workspace.hardware.get("nvidia_gpus", [])),
+            (
+                int(float(item.get("vram_gb") or 0) * 1024)
+                for item in self.workspace.hardware.get("nvidia_gpus", [])
+            ),
             default=0,
+        )
+        tuning = autotune_execution(
+            run.profile,
+            self.workspace.hardware,
+            records=dataset.records,
+            features=dataset.features,
+            batch_size=run.batch_size,
+            streaming=bool(dataset_spec),
         )
         config_payload = {
             "dataset_hash": dataset.sha256,
@@ -315,6 +376,16 @@ class TrainingRuntime:
         config_hash = hashlib.sha256(
             json.dumps(config_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        checkpoint_metadata = {
+            "run_id": run.id,
+            "dataset_hash": dataset.sha256,
+            "config_hash": config_hash,
+            "backend": backend_name,
+            "task_type": run.objective,
+            "architecture": run.architecture,
+            "model_format": run.model_format,
+            "worker_protocol": WORKER_PROTOCOL_VERSION,
+        }
         if source:
             self.checkpoints.verify(
                 source,
@@ -335,6 +406,10 @@ class TrainingRuntime:
                 "memory_bytes": max(256 * 1024**2, int(total_memory * run.ram / 100)),
                 "cpu_percent": run.cpu,
                 "gpu_memory_mb": int(gpu_memory * run.gpu / 100),
+                "gpu_enabled": bool(run.gpu and self.workspace.hardware.get("gpu_available")),
+                "native_threads": tuning["native_threads"],
+                "arena_bytes": tuning["arena_bytes"],
+                "bulk_step_cap": tuning["bulk_step_cap"],
             },
             model_path=Path(run.model_path) if run.model_path else None,
             checkpoint_path=source,
@@ -366,7 +441,10 @@ class TrainingRuntime:
             "seed": run.seed,
             "architecture": run.architecture,
             "model_format": run.model_format,
+            "execution_tuning": tuning,
         }
+        if run.model_path:
+            self._capture_finetune_baseline(run, worker, checkpoint, checkpoint_metadata)
         self._save_worker_progress(run)
         return self._execute_worker(run_id, run, worker, checkpoint)
 
@@ -431,6 +509,14 @@ class TrainingRuntime:
         degradation_streak = 0
         last_progress_save = 0.0
         evaluation_interval = run.evaluation_interval or max(20, min(500, max(1, run.max_steps // 20)))
+        trace = TrainingTrace.from_metrics(run.metrics)
+        trace.add(
+            "training_started",
+            step=run.step,
+            backend=run.effective_backend or run.backend,
+            tuning=run.environment_manifest.get("execution_tuning", {}),
+        )
+        last_evaluation_at = time.monotonic()
         while True:
             with self.lock:
                 control = dict(self.controls.get(run_id, {"pause": False, "stop": False}))
@@ -445,7 +531,8 @@ class TrainingRuntime:
             steps_to_evaluation = evaluation_interval - (run.step % evaluation_interval)
             steps_to_finish = max(1, run.max_steps - run.step)
             fast_linear_backend = (run.effective_backend or run.backend) in {"native", "numpy"}
-            maximum_chunk = 100 if fast_linear_backend else 1
+            tuned_cap = int(run.environment_manifest.get("execution_tuning", {}).get("bulk_step_cap", 100))
+            maximum_chunk = min(100, max(1, tuned_cap)) if fast_linear_backend else 1
             responsiveness_cap = max(1, min(maximum_chunk, 65_536 // max(1, run.batch_size)))
             chunk_steps = min(steps_to_evaluation, steps_to_finish, responsiveness_cap)
             try:
@@ -472,6 +559,8 @@ class TrainingRuntime:
             run.loss = step.loss
             if run.step % evaluation_interval != 0 and run.step < run.max_steps:
                 now = time.monotonic()
+                trace.add("progress", step=run.step, loss=run.loss, samples_seen=run.samples_seen)
+                run.metrics = {**run.metrics, "trace": trace.events}
                 if last_progress_save == 0.0 or now - last_progress_save >= .5:
                     run.message = f"Обучение: шаг {run.step}; loss {run.loss:.4f}; batch {run.batch_size}"
                     self._save_worker_progress(run)
@@ -481,11 +570,52 @@ class TrainingRuntime:
             self._record_worker_events(run, worker)
             score = evaluation.score
             run.eval_count += 1
+            elapsed = max(time.monotonic() - last_evaluation_at, 1e-9)
+            updates_per_second = executed_steps / elapsed
+            last_evaluation_at = time.monotonic()
+            baseline = run.environment_manifest.get("fine_tune_baseline", {})
+            baseline_score = baseline.get("score") if isinstance(baseline, dict) else None
+            gate = QualityGate(
+                degradation_margin=run.degradation_margin,
+                baseline_score=baseline_score if isinstance(baseline_score, (int, float)) else None,
+            )
+            quality_gate = gate.inspect(
+                score=score,
+                loss=run.loss,
+                metrics=evaluation.metrics,
+                best_score=score if run.eval_count == 1 else run.best_score,
+            )
+            trace.add(
+                "evaluation",
+                step=run.step,
+                score=quality_gate["score"],
+                loss=quality_gate["loss"],
+                updates_per_second=updates_per_second,
+                quality=quality_gate["status"],
+            )
+            if not quality_gate["finite"]:
+                run.message = "Quality Gate: обнаружены NaN/Inf; обучение остановлено до замены checkpoint"
+                run.termination_reason = "quality_gate_invalid"
+                run.metrics = {
+                    "step": run.step,
+                    "created_at": time.time(),
+                    "quality_gate": quality_gate,
+                    "trace": trace.events,
+                }
+                self.storage.log_action(
+                    "runtime",
+                    "quality_gate.rejected",
+                    {"run_id": run.id, "invalid_paths": quality_gate["invalid_paths"]},
+                )
+                self._save_worker_progress(run)
+                raise FloatingPointError("Quality Gate rejected non-finite training metrics")
             run.metrics = {
                 "step": run.step,
                 "train": {"loss": run.loss},
                 "validation": evaluation.metrics,
                 "created_at": time.time(),
+                "quality_gate": quality_gate,
+                "trace": trace.events,
             }
             recent_scores.append(score)
             recent_scores = recent_scores[-4:]
@@ -554,6 +684,7 @@ class TrainingRuntime:
                     "early_stopping_patience": run.early_stopping_patience,
                     "target_patience": run.target_patience,
                 },
+                "quality_gate": quality_gate,
             }
             target_hits = target_hits + 1 if score >= run.target_score else 0
             train_records = int(getattr(worker, "train_records", 0) or 0)
@@ -614,11 +745,14 @@ class TrainingRuntime:
             return LifecycleOutcome.COMPLETE
         test_result = evaluator()
         self._record_worker_events(run, worker)
+        trace = TrainingTrace.from_metrics(run.metrics)
+        trace.add("test", step=run.step, score=test_result.score)
         run.metrics = {
             **run.metrics,
             "test": test_result.metrics,
             "test_score": test_result.score,
             "tested_checkpoint": run.checkpoint.get("best", {}).get("sha256"),
+            "trace": trace.events,
         }
         self._save_worker_progress(run)
         return LifecycleOutcome.COMPLETE

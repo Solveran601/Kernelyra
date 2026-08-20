@@ -1,4 +1,4 @@
-name: TrainFlow release gates
+name: Kernelyra CI
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
         with: {python-version: "3.12"}
       - run: python -m pip install ".[dev]" -c constraints/release.txt
       - run: python -m ruff check .
-      - run: python -m mypy src/trainflow
+      - run: python -m mypy src/kernelyra
 
   unit-tests:
     strategy:
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "${{ matrix.python-version }}"}
       - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
-      - run: python -B -m pytest -q --cov=trainflow --cov-report=term-missing --cov-fail-under=0
+      - run: python -B -m pytest -q --cov=kernelyra --cov-report=term-missing --cov-fail-under=0
       - run: python -B scripts/check_coverage.py
 
   dependency-compatibility:
@@ -74,7 +74,7 @@ jobs:
         with: {python-version: "3.12"}
       - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
       - run: python -B -m pytest -q tests/test_security.py tests/test_import_safety.py tests/test_mcp_permissions.py tests/test_failure_modes.py
-      - run: python -m bandit -q -r src/trainflow -x tests
+      - run: python -m bandit -q -r src/kernelyra -x tests
       - run: python -m pip_audit --strict
 
   native-probe:
@@ -84,8 +84,6 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: python -m pip install ".[dev]" -c constraints/release.txt
-      - run: cmake -S native/cpp -B native/cpp/build
-      - run: cmake --build native/cpp/build --config Release
       - run: python -B -m pytest -q tests/test_native_probe.py
 
   daemon-cli-mcp-e2e:
@@ -104,13 +102,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
+      - name: Install native source-build toolchain
+        shell: pwsh
+        run: |
+          choco install mingw zig --no-progress --yes
+          rustup target add x86_64-pc-windows-gnu
       - run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
       - run: python scripts/release.py check
       - run: python scripts/release.py build
       - run: python scripts/release.py verify
+      - run: python scripts/release.py bundle
       - uses: actions/upload-artifact@v4
         with:
-          name: trainflow-release-candidate
+          name: kernelyra-release-candidate
           path: |
             dist/*
             RELEASE_MANIFEST.json

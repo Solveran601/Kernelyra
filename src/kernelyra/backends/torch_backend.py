@@ -48,11 +48,13 @@ class TorchBackend:
             torch.cuda.manual_seed_all(config.seed)
         threads = max(1, int((os.cpu_count() or 1) * int(config.resource_limits.get("cpu_percent", 50)) / 100))
         torch.set_num_threads(threads)
-        use_cuda = bool(config.resource_limits.get("gpu_memory_mb")) and torch.cuda.is_available()
+        use_cuda = bool(config.resource_limits.get("gpu_enabled")) and torch.cuda.is_available()
         device = torch.device("cuda" if use_cuda else "cpu")
         if use_cuda:
-            fraction = min(1.0, max(.05, int(config.resource_limits["gpu_memory_mb"]) / max(1, torch.cuda.get_device_properties(0).total_memory / 1024**2)))
-            torch.cuda.set_per_process_memory_fraction(fraction, 0)
+            gpu_limit = int(config.resource_limits.get("gpu_memory_mb") or 0)
+            if gpu_limit > 0:
+                fraction = min(1.0, max(.05, gpu_limit / max(1, torch.cuda.get_device_properties(0).total_memory / 1024**2)))
+                torch.cuda.set_per_process_memory_fraction(fraction, 0)
 
         source = (
             StreamingTabularSource(config.dataset_spec, config.seed, config.data_workers, config.prefetch)

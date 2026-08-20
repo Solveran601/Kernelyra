@@ -85,11 +85,23 @@ class TrainingConfig:
     def low_memory(self) -> Self:
         return self.profile("low-memory")
 
+    def weak(self) -> Self:
+        """Use the conservative program for a weak PC."""
+        return self.low_memory()
+
     def balanced(self) -> Self:
         return self.profile("balanced")
 
+    def medium(self) -> Self:
+        """Alias for the balanced program."""
+        return self.balanced()
+
     def performance(self) -> Self:
         return self.profile("performance")
+
+    def powerful(self) -> Self:
+        """Use the throughput-oriented program for a powerful PC."""
+        return self.performance()
 
     def workstation(self) -> Self:
         return self.profile("workstation")

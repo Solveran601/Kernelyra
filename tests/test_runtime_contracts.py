@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import unittest
 from types import SimpleNamespace
@@ -88,6 +89,22 @@ class ObservableSlowWorker:
         if self.calls == 2:
             self.runtime.controls[self.run_id]["pause"] = True
         return StepResult(loss=.25, samples=batch_size)
+
+    @staticmethod
+    def drain_events() -> list[dict[str, object]]:
+        return []
+
+
+class InvalidMetricWorker:
+    train_records = 1000
+
+    @staticmethod
+    def train_steps(batch_size: int, steps: int) -> StepResult:
+        return StepResult(loss=.25, samples=batch_size * steps)
+
+    @staticmethod
+    def evaluate() -> EvaluationResult:
+        return EvaluationResult(math.nan, {"accuracy": math.nan})
 
     @staticmethod
     def drain_events() -> list[dict[str, object]]:
@@ -250,6 +267,49 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertFalse(runtime.checkpoints.last_path(run.id).exists())
             self.assertNotIn("last", run.checkpoint)
             self.assertEqual(run.metrics["test_score"], .88)
+            self.assertTrue(any(item["event"] == "evaluation" for item in run.metrics["trace"]))
+            self.assertEqual(run.metrics["quality_gate"]["status"], "regressing")
+            workspace.close()
+
+    def test_finetune_baseline_is_preserved_when_updates_degrade(self) -> None:
+        with isolated_workspace() as temporary:
+            workspace = Workspace.open(temporary / "project")
+            runtime = workspace.runtime
+            run = workspace.create_run(
+                RunConfig(dataset="demo", backend="native", max_steps=100, evaluation_interval=10)
+            ).info
+            run.effective_backend = "native"
+            run.model_path = "incoming-model.npz"
+            run.batch_mode = "manual"
+            runtime.controls[run.id] = {"pause": False, "stop": False}
+            worker = DegradingWorker()
+            best = runtime.checkpoint_path(run.id)
+            runtime._capture_finetune_baseline(
+                run,
+                worker,
+                best,
+                {
+                    "run_id": run.id,
+                    "dataset_hash": "dataset",
+                    "config_hash": "config",
+                    "backend": "native",
+                    "task_type": run.objective,
+                    "architecture": run.architecture,
+                    "model_format": run.model_format,
+                    "worker_protocol": "test/1",
+                },
+            )
+            outcome = runtime._run_worker_loop(run.id, run, worker, best)
+            self.assertIs(outcome, LifecycleOutcome.COMPLETE)
+            self.assertEqual(run.termination_reason, "model_degradation")
+            self.assertEqual(run.best_score, .90)
+            self.assertEqual(run.best_step, 0)
+            self.assertEqual(run.metrics["health"]["delivered_score"], .90)
+            self.assertEqual(run.environment_manifest["fine_tune_baseline"]["score"], .90)
+            self.assertTrue(any(item["event"] == "fine_tune_baseline" for item in run.metrics["trace"]))
+            self.assertEqual(worker.restored, best)
+            actions = workspace.storage.recent_actions(20)
+            self.assertTrue(any(item["action"] == "finetune.baseline_preserved" for item in actions))
             workspace.close()
 
     def test_model_guard_manual_sensitivity_is_applied_and_reported(self) -> None:
@@ -282,6 +342,26 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertEqual(policy["evaluation_interval"], 10)
             self.assertEqual(policy["degradation_patience"], 1)
             self.assertEqual(policy["degradation_margin"], .02)
+            workspace.close()
+
+    def test_quality_gate_rejects_non_finite_metrics_before_checkpoint_write(self) -> None:
+        with isolated_workspace() as temporary:
+            workspace = Workspace.open(temporary / "project")
+            runtime = workspace.runtime
+            run = workspace.create_run(
+                RunConfig(dataset="demo", backend="native", max_steps=100, evaluation_interval=10)
+            ).info
+            run.effective_backend = "native"
+            run.batch_mode = "manual"
+            runtime.controls[run.id] = {"pause": False, "stop": False}
+            with self.assertRaisesRegex(FloatingPointError, "Quality Gate"):
+                runtime._run_worker_loop(
+                    run.id, run, InvalidMetricWorker(), runtime.checkpoint_path(run.id)
+                )
+            self.assertEqual(run.termination_reason, "quality_gate_invalid")
+            self.assertFalse(run.metrics["quality_gate"]["finite"])
+            self.assertNotIn("validation", run.metrics)
+            self.assertFalse(runtime.checkpoints.last_path(run.id).exists())
             workspace.close()
 
     def test_slow_worker_progress_is_published_before_validation(self) -> None:

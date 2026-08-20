@@ -40,6 +40,19 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor")
     commands.add_parser("capabilities")
     commands.add_parser("formats", help="List recognized routes and installed trainable adapters")
+    commands.add_parser("modes", help="Show the four adaptive execution programs for this computer")
+    tune = commands.add_parser("tune", help="Preview deterministic native execution tuning")
+    tune.add_argument("--profile", choices=["auto", "eco", "low-memory", "balanced", "performance", "workstation", "custom"], default="auto")
+    tune.add_argument("--records", type=int, default=100_000)
+    tune.add_argument("--features", type=int, default=32)
+    tune.add_argument("--batch-size", type=int, default=64)
+    tune.add_argument("--streaming", action="store_true")
+    chunk_plan = commands.add_parser("chunk-plan", help="Preview deterministic variable dataset chunks")
+    chunk_plan.add_argument("records", type=int, help="Total record count to divide")
+    chunk_plan.add_argument("--target-records", type=int, default=4096)
+    chunk_plan.add_argument("--minimum-records", type=int)
+    chunk_plan.add_argument("--maximum-records", type=int)
+    chunk_plan.add_argument("--seed", type=int, default=42)
 
     def add_training_options(item: argparse.ArgumentParser) -> None:
         item.add_argument("dataset", help="Dataset file or folder path")
@@ -135,7 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--profile", default="auto")
     create.add_argument("--seed", type=int, default=42)
     create.add_argument("--start", action="store_true")
-    for name in ("start", "pause", "resume", "stop", "show", "get", "watch", "logs", "export"):
+    for name in ("start", "pause", "resume", "stop", "show", "get", "watch", "logs", "trace", "export"):
         item = run_commands.add_parser(name)
         item.add_argument("run_id")
         if name in {"start", "resume"}:
@@ -364,6 +377,55 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             "model_formats": list(CHECKPOINT_FORMATS),
             "contract": "recognized != extractable != directly trainable; every item reports its actual level",
         }
+    if args.command == "modes":
+        from .hardware import EXECUTION_MODES, detect_hardware, execution_policy, recommend_profile
+
+        hardware = detect_hardware()
+        recommended = recommend_profile(hardware)
+        policy = execution_policy(recommended, hardware)
+        return True, {
+            "recommended_profile": recommended,
+            "recommended_mode": policy["mode"],
+            "gpu_available": bool(hardware["gpu_available"]),
+            "accelerators": [*hardware["nvidia_gpus"], *hardware["accelerators"]],
+            "modes": {
+                name: {
+                    "label": item["label"],
+                    "data_workers": item["data_workers"],
+                    "prefetch": item["prefetch"],
+                    "stream_limit_mb": None if item["stream_limit"] >= 2**60 else item["stream_limit"] // 1024**2,
+                    "cpu_backends": list(item["cpu_backends"]),
+                    "gpu_backends": list(item["gpu_backends"]),
+                    "native_thread_fraction": item["native_thread_fraction"],
+                    "bulk_step_cap": item["bulk_step_cap"],
+                    "arena_mb": item["arena_bytes"] // 1024**2,
+                    "strategy": item["strategy"],
+                }
+                for name, item in EXECUTION_MODES.items()
+            },
+        }
+    if args.command == "tune":
+        from .hardware import detect_hardware
+        from .tuning import autotune_execution
+
+        return True, autotune_execution(
+            args.profile,
+            detect_hardware(),
+            records=args.records,
+            features=args.features,
+            batch_size=args.batch_size,
+            streaming=args.streaming,
+        )
+    if args.command == "chunk-plan":
+        from .planning import ContextChunkPlanner
+
+        planner = ContextChunkPlanner(
+            target_records=args.target_records,
+            minimum_records=args.minimum_records,
+            maximum_records=args.maximum_records,
+            seed=args.seed,
+        )
+        return True, planner.summary(args.records)
     if args.command == "native":
         from .native_core import build_native_core, native_core_status
 
@@ -542,6 +604,13 @@ def _main(args: argparse.Namespace) -> int:
             return _watch(client, args.run_id, args.json)
         if args.run_command == "logs":
             _emit(client.get_run_logs(args.run_id, args.limit), args.json)
+            return 0
+        if args.run_command == "trace":
+            from .trace import TrainingTrace
+
+            metrics = client.get_run_metrics(args.run_id)
+            trace = TrainingTrace.from_metrics(metrics.get("metrics", metrics))
+            _emit({"run_id": args.run_id, "summary": trace.summary(), "trace": trace.events}, args.json)
             return 0
         if args.run_command == "export":
             exported = client.export_run(args.run_id)
