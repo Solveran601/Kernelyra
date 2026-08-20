@@ -34,6 +34,10 @@ from .models import (
     RunStatus,
     TaskType,
 )
+from .planning import ContextChunk, ContextChunkPlanner
+from .quality import QualityGate
+from .tuning import autotune_execution
+from .native_core import NativeTensorArena
 from .workspace import Kernelyra, RunHandle, Workspace
 
 __version__ = "0.3.0a1"
@@ -50,6 +54,8 @@ __all__ = [
     "BackendInfo",
     "ConfigurationError",
     "Config",
+    "ContextChunk",
+    "ContextChunkPlanner",
     "DaemonClient",
     "DaemonUnavailableError",
     "Dataset",
@@ -61,6 +67,7 @@ __all__ = [
     "IngestorInfo",
     "Engine",
     "RemoteError",
+    "QualityGate",
     "Run",
     "RunConfig",
     "RunError",
@@ -76,6 +83,7 @@ __all__ = [
     "Kernelyra",
     "KernelyraClient",
     "KernelyraError",
+    "NativeTensorArena",
     "TrainingPlan",
     "TrainingConfig",
     "TrainingResult",
@@ -92,4 +100,5 @@ __all__ = [
     "text_format_count",
     "plan",
     "train",
+    "autotune_execution",
 ]

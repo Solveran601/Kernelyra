@@ -11,7 +11,7 @@ from typing import Any
 from .architectures import resolve_training_contract
 from .batch import plan_batch
 from .errors import ConfigurationError, DatasetError, RunError
-from .hardware import PROFILE_PRESETS, recommend_profile
+from .hardware import PROFILE_PRESETS, execution_policy, recommend_profile
 from .models import DatasetInfo, RunConfig, RunInfo, RunStatus, TaskType
 from .workspace import Workspace
 
@@ -86,15 +86,7 @@ _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvem
 
 
 def _stream_limit(profile: str, maximum: int) -> int:
-    profile_limit = {
-        "eco": 96 * 1024 * 1024,
-        "low-memory": 128 * 1024 * 1024,
-        "balanced": 256 * 1024 * 1024,
-        "custom": 256 * 1024 * 1024,
-        "performance": 384 * 1024 * 1024,
-        "workstation": maximum,
-    }[profile]
-    return min(maximum, profile_limit)
+    return min(maximum, int(execution_policy(profile, {})["stream_limit"]))
 
 
 def _coerce(name: str, value: Any) -> Any:
@@ -142,6 +134,7 @@ class TrainingPlan:
     architecture: str
     model_format: str
     profile: str
+    execution_mode: str
     batch_size: int
     max_steps: int
     target_metric: float
@@ -266,7 +259,7 @@ class AutoTrainer:
             return TaskType.MULTICLASS_CLASSIFICATION.value
         return TaskType.REGRESSION.value
 
-    def _select_backend(self, requested: str, task: str) -> str:
+    def _select_backend(self, requested: str, task: str, policy: Mapping[str, Any]) -> str:
         backends = {item["name"]: item for item in self.workspace.capabilities["backends"]}
         if requested != "auto":
             item = backends.get(requested)
@@ -277,7 +270,7 @@ class AutoTrainer:
             if task not in item.get("task_types", []):
                 raise ConfigurationError(f"Backend '{requested}' does not support task '{task}'")
             return requested
-        for candidate in ("native", "torch", "tensorflow", "numpy"):
+        for candidate in tuple(policy["backend_order"]):
             item = backends.get(candidate)
             if item and item.get("available") and task in item.get("task_types", []):
                 return candidate
@@ -301,16 +294,17 @@ class AutoTrainer:
             task = str(inspected_tasks[0]) if len(inspected_tasks) == 1 else self._task_from_inspection(inspection, target)
         if task not in {item.value for item in TaskType}:
             raise ConfigurationError(f"Unknown task '{task}'")
-        backend = self._select_backend(resolved.values["backend"], task)
-        architecture, model_format = resolve_training_contract(
-            resolved.values["architecture"], resolved.values["model_format"], backend, task
-        )
         profile = resolved.values["profile"]
         if profile == "auto":
             profile = recommend_profile(self.workspace.hardware)
         if profile not in PROFILE_PRESETS:
             raise ConfigurationError(f"Unknown hardware profile '{profile}'")
         preset = PROFILE_PRESETS[profile]
+        policy = execution_policy(profile, self.workspace.hardware)
+        backend = self._select_backend(resolved.values["backend"], task, policy)
+        architecture, model_format = resolve_training_contract(
+            resolved.values["architecture"], resolved.values["model_format"], backend, task
+        )
         cpu = int(resolved.values["cpu"] if resolved.values["cpu"] is not None else preset["cpu"])
         ram = int(resolved.values["ram"] if resolved.values["ram"] is not None else preset["ram"])
         gpu = int(
@@ -357,10 +351,13 @@ class AutoTrainer:
             raise ConfigurationError("target_metric is outside the valid range for this task")
         workers = resolved.values["data_workers"]
         if workers is None:
-            workers = max(0, min(8, int(self.workspace.hardware["cpu_threads"]) // 4))
+            workers = min(
+                int(policy["data_workers"]),
+                max(0, int(self.workspace.hardware["cpu_threads"]) // 2),
+            )
         prefetch = resolved.values["prefetch"]
         if prefetch is None:
-            prefetch = 1 if profile in {"eco", "low-memory"} else 2
+            prefetch = int(policy["prefetch"])
         hidden = resolved.values["hidden_layers"]
         if hidden is None:
             hidden = {
@@ -437,6 +434,7 @@ class AutoTrainer:
             architecture=architecture,
             model_format=model_format,
             profile=profile,
+            execution_mode=str(policy["mode"]),
             batch_size=batch.applied,
             max_steps=max_steps,
             target_metric=target_metric,
@@ -480,7 +478,9 @@ class AutoTrainer:
         else:
             imported = self.workspace.datasets.import_file(plan.dataset, plan.target)
         task = plan.task if plan.task in imported.task_types else imported.task_types[0]
-        backend = self._select_backend(plan.backend, task)
+        backend = self._select_backend(
+            plan.backend, task, execution_policy(plan.profile, self.workspace.hardware)
+        )
         plan = replace(
             plan,
             target=imported.target,

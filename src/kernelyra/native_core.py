@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import platform
 import shutil
@@ -13,10 +14,11 @@ import numpy as np
 
 from .models import TaskType
 
-ABI_VERSION = 3
+ABI_VERSION = 5
 COMPONENT_ZIG_MEMORY = 1
 COMPONENT_FORTRAN_NUMERIC = 2
-COMPONENT_ALL = 3
+COMPONENT_RUST_POLICY = 4
+COMPONENT_ALL = 7
 _TASK_IDS = {
     TaskType.BINARY_CLASSIFICATION.value: 0,
     TaskType.MULTICLASS_CLASSIFICATION.value: 1,
@@ -97,11 +99,12 @@ def native_core_status() -> dict[str, Any]:
 
 
 def build_native_core(output_dir: str | Path | None = None) -> Path:
-    """Build the Windows C ABI with Fortran training and Zig memory kernels."""
+    """Build the Windows C ABI with Rust policy, Fortran math and Zig memory kernels."""
     root = Path(__file__).resolve().parents[2]
     source = root / "native" / "bridge" / "cpp" / "core_abi.cpp"
+    policy_source = root / "native" / "bridge" / "cpp" / "context_policy.cpp"
     headers = root / "native" / "include"
-    if not source.is_file():
+    if not source.is_file() or not policy_source.is_file():
         raise NativeCoreError("Native C++ ABI bridge source is not present in this installation")
     destination = Path(output_dir) if output_dir else Path(__file__).resolve().parent / "native_bin"
     destination.mkdir(parents=True, exist_ok=True)
@@ -113,8 +116,11 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
         output = destination / "kernelyra_core.dll"
         gfortran = shutil.which("gfortran")
         zig = shutil.which("zig")
-        if not gfortran or not zig:
-            missing = ", ".join(name for name, value in (("gfortran", gfortran), ("zig", zig)) if not value)
+        cargo = shutil.which("cargo")
+        if not gfortran or not zig or not cargo:
+            missing = ", ".join(
+                name for name, value in (("gfortran", gfortran), ("zig", zig), ("cargo", cargo)) if not value
+            )
             raise NativeCoreError(
                 f"Windows source build requires {missing}; install the toolchain or use the bundled Windows wheel"
             )
@@ -122,6 +128,7 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             "zig": root / "native" / "core" / "zig" / "memory_kernels.zig",
             "fortran": root / "native" / "core" / "fortran" / "training_kernels.f90",
         }
+        rust_manifest = root / "native" / "core" / "rust" / "Cargo.toml"
         with tempfile.TemporaryDirectory(prefix="kernelyra-native-build-") as temporary:
             build = Path(temporary)
             objects: list[Path] = []
@@ -179,6 +186,27 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                     "Fortran numeric",
                 )
                 defines.append("-DKR_HAS_FORTRAN_NUMERIC=1")
+            if rust_manifest.is_file():
+                rust_target = "x86_64-pc-windows-gnu"
+                rust_library = (
+                    root / "native" / "core" / "rust" / "target" / rust_target / "release"
+                    / "libkernelyra_rust_policy.a"
+                )
+                result = subprocess.run(  # nosec B603
+                    [cargo, "build", "--manifest-path", str(rust_manifest), "--release", "--target", rust_target],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                    check=False,
+                )
+                if result.returncode or not rust_library.is_file():
+                    detail = (result.stderr or result.stdout)[-2000:]
+                    raise NativeCoreError(f"Rust policy component build failed: {detail}")
+                objects.append(rust_library)
+                defines.append("-DKR_HAS_RUST_POLICY=1")
             command = [
                 compiler,
                 "-std=c++17",
@@ -196,12 +224,17 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-static-libgcc",
                 "-static-libstdc++",
                 str(source),
+                str(policy_source),
                 *(str(item) for item in objects),
                 "-o",
                 str(output),
             ]
             if "-DKR_HAS_FORTRAN_NUMERIC=1" in defines:
                 command.extend(["-static-libgfortran", "-lquadmath"])
+            if "-DKR_HAS_RUST_POLICY=1" in defines:
+                # Rust's Windows GNU standard library resolves these system
+                # imports when its static policy archive is linked by MinGW.
+                command.extend(["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll"])
             completed = subprocess.run(  # nosec B603
                 command,
                 cwd=root,
@@ -236,6 +269,7 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             "-I",
             str(headers),
             str(source),
+            str(policy_source),
             "-o",
             str(output),
         ]
@@ -294,6 +328,24 @@ class NativeCore:
             ctypes.c_size_t,
         ]
         library.kr_memory_zero_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+        library.kr_values_all_finite_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+        library.kr_values_all_finite_f32.restype = ctypes.c_uint32
+        library.kr_values_l2_norm_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+        library.kr_values_l2_norm_f32.restype = ctypes.c_float
+        library.kr_values_clip_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+        library.kr_rust_mix_u64.argtypes = [ctypes.c_uint64]
+        library.kr_rust_mix_u64.restype = ctypes.c_uint64
+        library.kr_rust_split_for_key.argtypes = [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32]
+        library.kr_rust_split_for_key.restype = ctypes.c_uint32
+        library.kr_rust_next_chunk_size.argtypes = [
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+        ]
+        library.kr_rust_next_chunk_size.restype = ctypes.c_size_t
         library.kr_numeric_gradient_f32.argtypes = [
             ctypes.POINTER(ctypes.c_float),
             ctypes.POINTER(ctypes.c_float),
@@ -327,6 +379,16 @@ class NativeCore:
             ctypes.POINTER(ctypes.c_float),
         ]
         library.kr_model_train_random_step.restype = ctypes.c_int
+        library.kr_model_train_random_steps.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_float),
+        ]
+        library.kr_model_train_random_steps.restype = ctypes.c_int
         library.kr_model_predict.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -440,6 +502,47 @@ class NativeCore:
     def components(self) -> str:
         return str(self.library.kr_core_components().decode("ascii", "replace"))
 
+    def split_for_context(self, context_key: int, validation_percent: int = 15, test_percent: int = 15) -> int:
+        """Assign one stable context key to train (0), validation (1) or test (2)."""
+        split = int(self.library.kr_rust_split_for_key(context_key, validation_percent, test_percent))
+        if split > 2:
+            raise NativeCoreError("Invalid Rust split policy percentages")
+        return split
+
+    def next_chunk_size(
+        self,
+        remaining_records: int,
+        target_records: int,
+        minimum_records: int,
+        maximum_records: int,
+        sequence: int,
+        seed: int,
+    ) -> int:
+        """Return a bounded variable chunk size from the Rust policy component."""
+        return int(
+            self.library.kr_rust_next_chunk_size(
+                remaining_records, target_records, minimum_records, maximum_records, sequence, seed
+            )
+        )
+
+    def all_finite(self, values: np.ndarray) -> bool:
+        """Use Zig's vector-friendly guard before data is accepted by the core."""
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        return bool(self.library.kr_values_all_finite_f32(array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size))
+
+    def l2_norm(self, values: np.ndarray) -> float:
+        """Compute a checked float32 L2 norm through the Fortran numeric component."""
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        return float(self.library.kr_values_l2_norm_f32(array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size))
+
+    def clip(self, values: np.ndarray, limit: float) -> np.ndarray:
+        """Return a Zig-clamped float32 copy without mutating the caller's array."""
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1).copy()
+        self.library.kr_values_clip_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size, ctypes.c_float(limit)
+        )
+        return array
+
     @property
     def component_mask(self) -> int:
         return int(self.library.kr_core_component_mask())
@@ -481,6 +584,78 @@ class NativeCore:
         return NativeCoreError(value.decode("utf-8", "replace") if value else "Unknown native core error")
 
 
+class NativeTensorArena:
+    """Reusable 64-byte aligned float32 buffers backed by the Zig allocator.
+
+    Arena buffers are intentionally opt-in for public stream objects because a
+    reused buffer is invalidated by the next read.  The native backend opts in
+    only where it consumes each batch synchronously.
+    """
+
+    def __init__(
+        self, *, core: NativeCore | None = None, byte_budget: int | None = None, alignment: int = 64):
+        if alignment < ctypes.sizeof(ctypes.c_float) or alignment & (alignment - 1):
+            raise NativeCoreError("Native arena alignment must be a power of two")
+        self.core = core or NativeCore()
+        self.byte_budget = int(byte_budget) if byte_budget is not None else None
+        if self.byte_budget is not None and self.byte_budget < 1:
+            raise NativeCoreError("Native arena byte_budget must be positive")
+        self.alignment = int(alignment)
+        self._buffers: dict[tuple[str, tuple[int, ...]], tuple[int, Any, np.ndarray]] = {}
+        self._allocated_bytes = 0
+        self._closed = False
+
+    def acquire_float32(self, shape: tuple[int, ...], *, tag: str = "default") -> np.ndarray:
+        if self._closed:
+            raise NativeCoreError("Native tensor arena is closed")
+        normalized_shape = tuple(int(value) for value in shape)
+        if not normalized_shape or any(value < 1 for value in normalized_shape):
+            raise NativeCoreError("Native arena shape must contain positive dimensions")
+        key = (str(tag), normalized_shape)
+        previous = self._buffers.get(key)
+        if previous is not None:
+            return previous[2]
+        elements = math.prod(normalized_shape)
+        byte_count = elements * ctypes.sizeof(ctypes.c_float)
+        if self.byte_budget is not None and self._allocated_bytes + byte_count > self.byte_budget:
+            raise NativeCoreError(
+                f"Native tensor arena budget exceeded: need {byte_count} bytes, "
+                f"allocated {self._allocated_bytes}, budget {self.byte_budget}"
+            )
+        address = int(self.core.library.kr_memory_alloc_aligned(byte_count, self.alignment) or 0)
+        if not address:
+            raise self.core.error()
+        raw = (ctypes.c_float * elements).from_address(address)
+        array = np.ctypeslib.as_array(raw).reshape(normalized_shape)
+        self._buffers[key] = (address, raw, array)
+        self._allocated_bytes += byte_count
+        return array
+
+    @property
+    def stats(self) -> dict[str, int]:
+        return {
+            "alignment": self.alignment,
+            "allocated_bytes": self._allocated_bytes,
+            "buffers": len(self._buffers),
+            "byte_budget": self.byte_budget or 0,
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        for address, _, _ in self._buffers.values():
+            self.core.library.kr_memory_free_aligned(ctypes.c_void_p(address))
+        self._buffers.clear()
+        self._allocated_bytes = 0
+        self._closed = True
+
+    def __enter__(self) -> NativeTensorArena:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
 class NativeModel:
     def __init__(
         self,
@@ -502,12 +677,13 @@ class NativeModel:
         self.task = task
         self.features = int(features)
         self.classes = int(classes if task == TaskType.MULTICLASS_CLASSIFICATION.value else 1)
+        self.threads = max(1, int(threads if threads is not None else (os.cpu_count() or 1)))
         config = _ModelConfig(
             ABI_VERSION,
             _TASK_IDS[task],
             self.features,
             self.classes,
-            max(1, int(threads if threads is not None else (os.cpu_count() or 1))),
+            self.threads,
             int(seed),
             float(learning_rate),
             float(weight_decay),
@@ -553,6 +729,28 @@ class NativeModel:
             self._float_pointer(targets),
             len(targets),
             int(batch_size),
+            ctypes.byref(loss),
+        )
+        if not ok:
+            raise self.core.error()
+        return float(loss.value)
+
+    def train_random_steps(self, x: np.ndarray, y: np.ndarray, batch_size: int, steps: int) -> float:
+        """Run deterministic random-batch updates inside one native ABI call."""
+        rows = np.ascontiguousarray(x, dtype=np.float32)
+        targets = np.ascontiguousarray(y, dtype=np.float32).reshape(-1)
+        if rows.ndim != 2 or rows.shape != (len(targets), self.features) or len(targets) == 0:
+            raise NativeCoreError("Native training matrix shape mismatch")
+        if batch_size < 1 or not 1 <= steps <= 1_000_000:
+            raise NativeCoreError("Native batch size or step count is outside bounds")
+        loss = ctypes.c_float()
+        ok = self.core.library.kr_model_train_random_steps(
+            self.handle,
+            self._float_pointer(rows),
+            self._float_pointer(targets),
+            len(targets),
+            int(batch_size),
+            int(steps),
             ctypes.byref(loss),
         )
         if not ok:
@@ -703,6 +901,8 @@ class NativeNumericCsvStream:
         *,
         split: str = "train",
         core: NativeCore | None = None,
+        arena: NativeTensorArena | None = None,
+        reuse_buffers: bool = False,
     ):
         if spec.get("format") not in {"csv", "tsv"} or spec.get("encoding") not in {
             "utf-8",
@@ -724,7 +924,12 @@ class NativeNumericCsvStream:
             raise NativeCoreError("Native streaming metadata is not numeric or is incomplete") from error
         if task not in _TASK_IDS or not feature_names:
             raise NativeCoreError("Native streaming task or feature set is unsupported")
-        self.core = core or NativeCore()
+        self.core = core or (arena.core if arena is not None else NativeCore())
+        if arena is not None and arena.core is not self.core:
+            raise NativeCoreError("Native stream arena must use the same NativeCore instance")
+        self._reuse_buffers = bool(reuse_buffers)
+        self._arena = arena or (NativeTensorArena(core=self.core) if self._reuse_buffers else None)
+        self._owns_arena = self._arena is not None and arena is None
         self.features = len(feature_names)
         self.train_records = max(1, int(spec["split_records"]["train"]))
         split_ids = {"train": 0, "validation": 1, "test": 2}
@@ -765,8 +970,12 @@ class NativeNumericCsvStream:
     def next_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
         if batch_size < 1:
             raise NativeCoreError("Native stream batch size must be positive")
-        x = np.empty((batch_size, self.features), dtype=np.float32)
-        y = np.empty(batch_size, dtype=np.float32)
+        if self._arena is not None:
+            x = self._arena.acquire_float32((batch_size, self.features), tag=f"{self.split}.x")
+            y = self._arena.acquire_float32((batch_size,), tag=f"{self.split}.y")
+        else:
+            x = np.empty((batch_size, self.features), dtype=np.float32)
+            y = np.empty(batch_size, dtype=np.float32)
         ok = self.core.library.kr_csv_stream_next_batch(
             self.handle,
             batch_size,
@@ -792,6 +1001,8 @@ class NativeNumericCsvStream:
         if self.handle:
             self.core.library.kr_csv_stream_destroy(self.handle)
             self.handle = None
+        if self._owns_arena and self._arena is not None:
+            self._arena.close()
 
     def __enter__(self) -> NativeNumericCsvStream:
         return self

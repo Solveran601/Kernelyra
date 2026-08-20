@@ -1,0 +1,16 @@
+[package]
+name = "kernelyra-rust-policy"
+version = "0.3.0-alpha.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "Deterministic split and chunk policies for the Kernelyra native core"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"

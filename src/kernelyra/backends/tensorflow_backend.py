@@ -47,8 +47,9 @@ class TensorFlowBackend:
     def create_session(self, config: BackendConfig) -> TrainingSession:
         tf = _tensorflow()
         gpu_limit = int(config.resource_limits.get("gpu_memory_mb") or 0)
+        gpu_enabled = bool(config.resource_limits.get("gpu_enabled"))
         gpus = tf.config.list_physical_devices("GPU")
-        if gpu_limit <= 0 and gpus:
+        if not gpu_enabled and gpus:
             tf.config.set_visible_devices([], "GPU")
             gpus = []
         for gpu in gpus:

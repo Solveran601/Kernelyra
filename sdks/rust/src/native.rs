@@ -5,7 +5,8 @@ use std::ffi::{c_char, c_void, CStr};
 
 pub const ZIG_MEMORY: u32 = 1;
 pub const FORTRAN_NUMERIC: u32 = 2;
-pub const ALL_COMPONENTS: u32 = 3;
+pub const RUST_POLICY: u32 = 4;
+pub const ALL_COMPONENTS: u32 = 7;
 
 #[link(name = "kernelyra_core")]
 extern "C" {

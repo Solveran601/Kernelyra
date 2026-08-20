@@ -42,6 +42,12 @@ def _ram_bytes() -> int:
 def detect_hardware() -> dict[str, Any]:
     ram_bytes = _ram_bytes()
     nvidia: list[dict[str, Any]] = []
+    accelerator_hint = os.environ.get("KERNELYRA_ACCELERATOR", "").strip().lower()
+    generic_accelerators: list[dict[str, Any]] = []
+    if accelerator_hint in {"cuda", "rocm", "metal", "directml", "opencl"}:
+        # Non-NVIDIA drivers are framework-specific.  The hint keeps startup
+        # light and lets the isolated torch/tensorflow worker do final probing.
+        generic_accelerators.append({"kind": accelerator_hint, "source": "KERNELYRA_ACCELERATOR"})
     try:
         nvidia_smi = shutil.which("nvidia-smi")
         if not nvidia_smi:
@@ -72,7 +78,8 @@ def detect_hardware() -> dict[str, Any]:
         "cpu_threads": os.cpu_count() or 1,
         "ram_gb": round(ram_bytes / 1024**3, 1) if ram_bytes else 8.0,
         "nvidia_gpus": nvidia,
-        "gpu_available": bool(nvidia),
+        "accelerators": generic_accelerators,
+        "gpu_available": bool(nvidia or generic_accelerators),
         "tensorflow_devices": [],
         "engine_loading": False,
         "engine_error": None,
@@ -106,6 +113,7 @@ def recommend_profile(hardware: dict[str, Any]) -> str:
 PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     "low-memory": {
         "label": "Low memory",
+        "execution_mode": "weak",
         "cpu": 30,
         "ram": 35,
         "gpu": 30,
@@ -115,6 +123,7 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "eco": {
         "label": "Low memory (legacy eco alias)",
+        "execution_mode": "weak",
         "cpu": 30,
         "ram": 35,
         "gpu": 30,
@@ -124,6 +133,7 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "balanced": {
         "label": "Balanced",
+        "execution_mode": "balanced",
         "cpu": 55,
         "ram": 55,
         "gpu": 55,
@@ -133,6 +143,7 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "performance": {
         "label": "Performance",
+        "execution_mode": "performance",
         "cpu": 80,
         "ram": 75,
         "gpu": 75,
@@ -142,6 +153,7 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "workstation": {
         "label": "Workstation",
+        "execution_mode": "workstation",
         # Workstations are throughput-oriented: CPU/GPU are uncapped while RAM
         # retains a small emergency reserve for the OS, filesystem cache and
         # checkpoint writer.
@@ -155,6 +167,7 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
     "custom": {
         "label": "Custom",
+        "execution_mode": "balanced",
         "cpu": 55,
         "ram": 55,
         "gpu": 0,
@@ -163,3 +176,78 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         "model": "backend-defined",
     },
 }
+
+# Four execution programs behind one library API.  Profiles such as ``eco``
+# remain accepted as compatibility aliases, but resolve to one of these four
+# runtime strategies rather than creating a fifth behavior.
+EXECUTION_MODES: dict[str, dict[str, Any]] = {
+    "weak": {
+        "label": "Weak PC",
+        "data_workers": 0,
+        "prefetch": 0,
+        "stream_limit": 128 * 1024 * 1024,
+        "native_thread_fraction": .25,
+        "bulk_step_cap": 8,
+        "arena_bytes": 32 * 1024 * 1024,
+        "strategy": "stream-first, low-copy, low-latency",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "gpu_backends": ("native", "numpy", "torch", "tensorflow"),
+    },
+    "balanced": {
+        "label": "Balanced PC",
+        "data_workers": 2,
+        "prefetch": 2,
+        "stream_limit": 256 * 1024 * 1024,
+        "native_thread_fraction": .5,
+        "bulk_step_cap": 32,
+        "arena_bytes": 96 * 1024 * 1024,
+        "strategy": "balanced parallelism with bounded reuse",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "gpu_backends": ("native", "torch", "tensorflow", "numpy"),
+    },
+    "performance": {
+        "label": "Powerful PC",
+        "data_workers": 6,
+        "prefetch": 4,
+        "stream_limit": 384 * 1024 * 1024,
+        "native_thread_fraction": .75,
+        "bulk_step_cap": 100,
+        "arena_bytes": 256 * 1024 * 1024,
+        "strategy": "throughput-first OpenMP and bulk dispatch",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "gpu_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+    "workstation": {
+        "label": "Workstation",
+        "data_workers": 12,
+        "prefetch": 8,
+        "stream_limit": 2**63 - 1,
+        "native_thread_fraction": 1.0,
+        "bulk_step_cap": 100,
+        "arena_bytes": 768 * 1024 * 1024,
+        "strategy": "maximum local throughput with large reusable arena",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "gpu_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+}
+
+
+def execution_mode(profile: str) -> str:
+    """Map public profiles and legacy aliases to one of four engine programs."""
+    preset = PROFILE_PRESETS.get(profile)
+    if preset is None:
+        raise KeyError(f"Unknown hardware profile: {profile}")
+    return str(preset["execution_mode"])
+
+
+def execution_policy(profile: str, hardware: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of the selected program with CPU/GPU backend priority."""
+    mode = execution_mode(profile)
+    policy = dict(EXECUTION_MODES[mode])
+    # NVIDIA is detected without importing heavy ML runtimes. Other accelerators
+    # are still usable when a user explicitly selects torch/tensorflow; their
+    # framework performs final device discovery inside the isolated worker.
+    has_detected_gpu = bool(hardware.get("gpu_available") or hardware.get("nvidia_gpus"))
+    policy["mode"] = mode
+    policy["backend_order"] = policy["gpu_backends"] if has_detected_gpu else policy["cpu_backends"]
+    return policy

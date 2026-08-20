@@ -20,6 +20,7 @@ by the bundled multi-language SDKs.
   recognition is the same as extraction or training;
 - C++ bounded-memory numeric CSV/TSV streaming and general bounded-memory JSONL/Parquet/mixed-table streaming;
 - automatic hardware profile, backend, task, batch size and network widths;
+- four execution programs inside one API: weak PC, balanced PC, powerful PC and workstation;
 - exact precedence: Python/CLI option > environment > TOML > automatic value;
 - adaptive batches with an explicit warning/confirmation for unsafe manual sizes;
 - result-driven stopping, best/last atomic checkpoints, pause, resume and final test evaluation;
@@ -39,7 +40,8 @@ formats above; multimodal trainers are not claimed until they are implemented.
 будет угадывать обучение.
 
 ```powershell
-python -m pip install -e ".[data]"
+# После публикации в PyPI (0.3 пока является pre-release):
+python -m pip install --pre "kernelyra-ai[data]"
 python -m kernelyra train C:\data\train.csv
 python -m kernelyra finetune C:\models\best.npz C:\data\new_rows.csv
 python -m kernelyra plan C:\data\folder
@@ -51,9 +53,23 @@ C:\data\train.csv`. Для тонкой настройки добавляй то
 например `--backend native --profile low-memory` или `--max-steps 500`; все
 остальные значения остаются автоматическими.
 
+## Four execution programs
+
+`low-memory` (and legacy `eco`) resolves to the weak-PC program: native CPU,
+zero prefetch and strict streaming. `balanced` raises safe parallelism;
+`performance` and `workstation` use progressively larger queues, workers and
+batch ceilings, and prefer an installed GPU backend when an accelerator is
+available. All four fall back safely to the native CPU backend.
+
+NVIDIA discovery is automatic and lightweight. For a non-NVIDIA accelerator
+supported by the installed PyTorch/TensorFlow runtime, set one hint before
+starting Kernelyra, for example `$env:KERNELYRA_ACCELERATOR = "rocm"`, `metal`
+or `directml`; device probing still happens inside the isolated run worker.
+
 ## Install
 
 ```console
+# Из исходного checkout — режим разработки:
 python -m pip install -e ".[torch,data]"
 kernelyra native build
 kernelyra doctor --json
@@ -217,6 +233,52 @@ numbers. Measure wall time, training work, peak process-tree RAM, held-out
 accuracy and checkpoint size for Kernelyra and matching direct-framework
 baselines, then remove generated datasets, models and one-off harnesses from the
 source tree.
+
+## Reproducible 10-library benchmark
+
+The normal package does **not** install heavyweight frameworks.  The isolated
+benchmark stack downloads exactly ten training dependencies — PyTorch,
+TensorFlow, JAX, Flax, Optax, scikit-learn, XGBoost, LightGBM, CatBoost and
+River — only when this command is requested:
+
+```powershell
+# В checkout репозитория:
+.\scripts\install_benchmark_stack.ps1
+```
+
+For an installed release, the equivalent dependency command is:
+
+```powershell
+python -m pip install --pre "kernelyra-ai[benchmark]"
+```
+
+It creates `.benchmarks\frameworks-venv` and writes the complete JSON report to
+`.benchmarks\framework-matrix.json`.  To reuse an existing environment:
+
+```powershell
+.\.benchmarks\frameworks-venv\Scripts\python.exe scripts\benchmark_tabular_frameworks.py
+```
+
+The report separates results instead of inventing an unfair leaderboard:
+
+| Group | Compared libraries | Meaning |
+| --- | --- | --- |
+| `matched_linear` | Kernelyra, NumPy, PyTorch, TensorFlow, JAX, Flax/Optax, scikit-learn | Identical synthetic full-batch logistic-regression task; wall-time values may be compared only within this group. |
+| `tree_not_matched` | XGBoost, LightGBM, CatBoost | Native tree training capability, recorded separately from linear throughput. |
+| `online_linear_not_matched` | River | Online row-by-row learner, recorded separately. |
+
+No command silently uploads the report or dataset.  Treat a result as evidence
+only when the JSON report identifies the hardware, package versions, workload,
+accuracy and the comparison group.
+
+## Release automation
+
+Pushing a regular commit runs CI; it does not publish anything.  Pushing a
+verified tag such as `v0.3.0a1` runs `.github/workflows/release.yml`, builds the
+Windows wheel plus source archives, verifies them, attaches them to a GitHub
+Release and publishes the checksums.  A separate manual workflow dispatch can
+publish the wheel and sdist to PyPI after its protected `pypi` environment and
+Trusted Publisher are configured.  This prevents accidental public releases.
 
 Kernelyra 0.3 supports Windows x64 on Python 3.11-3.13. Linux, macOS and Windows
 ARM are not release targets yet and are not claimed as supported.

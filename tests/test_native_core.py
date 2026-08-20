@@ -13,11 +13,14 @@ from kernelyra.ingestion.csv_ingestor import CSVIngestor
 from kernelyra.native_core import (
     COMPONENT_ALL,
     COMPONENT_FORTRAN_NUMERIC,
+    COMPONENT_RUST_POLICY,
     COMPONENT_ZIG_MEMORY,
     NativeCore,
+    NativeCoreError,
     NativeModel,
     NativeNumericCsv,
     NativeNumericCsvStream,
+    NativeTensorArena,
     native_core_status,
 )
 from kernelyra.streaming import StreamingTabularSource, build_stream_spec
@@ -32,7 +35,12 @@ class NativeCoreTests(unittest.TestCase):
     def test_polyglot_kernels_match_numpy_and_cpp_fallbacks(self) -> None:
         core = NativeCore()
         self.assertTrue(core.component_mask & COMPONENT_FORTRAN_NUMERIC)
+        self.assertTrue(core.component_mask & COMPONENT_RUST_POLICY)
         self.assertTrue(core.component_mask & COMPONENT_ZIG_MEMORY)
+        self.assertTrue(core.all_finite(np.asarray([1.0, -2.0, 3.0], dtype=np.float32)))
+        self.assertFalse(core.all_finite(np.asarray([1.0, np.nan], dtype=np.float32)))
+        self.assertAlmostEqual(core.l2_norm(np.asarray([3.0, 4.0], dtype=np.float32)), 5.0, places=5)
+        np.testing.assert_allclose(core.clip(np.asarray([-5.0, .5, 7.0], dtype=np.float32), 2.0), [-2.0, .5, 2.0])
         self.assertEqual(core.component_mask, COMPONENT_ALL)
         self.assertEqual(core.enabled_component_mask, COMPONENT_ALL)
         rng = np.random.default_rng(123)
@@ -96,6 +104,25 @@ class NativeCoreTests(unittest.TestCase):
         core.zero_f32(copied)
         np.testing.assert_array_equal(copied, np.zeros_like(source))
 
+    def test_tensor_arena_reuses_aligned_buffers_and_enforces_budget(self) -> None:
+        core = NativeCore()
+        arena = NativeTensorArena(core=core, byte_budget=4096)
+        try:
+            first = arena.acquire_float32((16, 8), tag="train.x")
+            repeated = arena.acquire_float32((16, 8), tag="train.x")
+            targets = arena.acquire_float32((16,), tag="train.y")
+            self.assertIs(first, repeated)
+            self.assertEqual(first.ctypes.data % 64, 0)
+            self.assertEqual(targets.ctypes.data % 64, 0)
+            self.assertEqual(arena.stats["buffers"], 2)
+            self.assertEqual(arena.stats["allocated_bytes"], (16 * 8 + 16) * 4)
+            with self.assertRaises(NativeCoreError):
+                arena.acquire_float32((1024,), tag="too-large")
+        finally:
+            arena.close()
+        with self.assertRaises(NativeCoreError):
+            arena.acquire_float32((1,), tag="closed")
+
     def test_binary_training_and_parameter_roundtrip(self) -> None:
         x = np.asarray(
             [[-2.0, -1.0], [-1.0, -2.0], [1.0, 2.0], [2.0, 1.0]], dtype=np.float32
@@ -115,6 +142,23 @@ class NativeCoreTests(unittest.TestCase):
             restored.import_parameters(weights, bias)
             np.testing.assert_allclose(restored.predict(x), probabilities, rtol=1e-6, atol=1e-6)
 
+    def test_batched_random_steps_match_individual_steps(self) -> None:
+        rng = np.random.default_rng(501)
+        x = rng.normal(size=(127, 11)).astype(np.float32)
+        y = (x[:, 0] + x[:, 3] > 0.0).astype(np.float32)
+        with NativeModel(
+            task="binary_classification", features=11, seed=99, learning_rate=.02, threads=1
+        ) as individual, NativeModel(
+            task="binary_classification", features=11, seed=99, learning_rate=.02, threads=1
+        ) as bulk:
+            for _ in range(17):
+                individual_loss = individual.train_random_step(x, y, 23)
+            bulk_loss = bulk.train_random_steps(x, y, 23, 17)
+            np.testing.assert_allclose(
+                bulk.predict(x), individual.predict(x), rtol=2e-6, atol=2e-6
+            )
+            self.assertAlmostEqual(bulk_loss, individual_loss, places=6)
+
     def test_multiclass_probabilities_are_normalized(self) -> None:
         x = np.eye(3, dtype=np.float32)
         y = np.asarray([0, 1, 2], dtype=np.float32)
@@ -130,6 +174,23 @@ class NativeCoreTests(unittest.TestCase):
             probabilities = model.predict(x)
         self.assertEqual(probabilities.shape, (3, 3))
         np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
+
+    def test_parallel_multiclass_matches_single_thread_update(self) -> None:
+        rng = np.random.default_rng(884)
+        x = rng.normal(size=(2048, 512)).astype(np.float32)
+        y = rng.integers(0, 3, size=2048).astype(np.float32)
+        with NativeModel(
+            task="multiclass_classification", features=512, classes=3, seed=19, learning_rate=.01, threads=1
+        ) as single, NativeModel(
+            task="multiclass_classification", features=512, classes=3, seed=19, learning_rate=.01, threads=4
+        ) as parallel:
+            single_loss = single.train_step(x, y)
+            parallel_loss = parallel.train_step(x, y)
+            single_weights, single_bias = single.export_parameters()
+            parallel_weights, parallel_bias = parallel.export_parameters()
+        self.assertAlmostEqual(single_loss, parallel_loss, places=5)
+        np.testing.assert_allclose(parallel_weights, single_weights, rtol=2e-5, atol=2e-5)
+        np.testing.assert_allclose(parallel_bias, single_bias, rtol=2e-5, atol=2e-5)
 
     def test_numeric_csv_uses_native_standardization(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -187,12 +248,14 @@ class NativeCoreTests(unittest.TestCase):
                     profile="low-memory",
                     seed=11,
                     dataset_spec=spec,
-                    resource_limits={"cpu_percent": 50},
+                    resource_limits={"cpu_percent": 50, "native_threads": 1, "arena_bytes": 4096},
                 )
             )
             checkpoint = root / "stream.npz"
             try:
                 self.assertEqual(session.metadata["stream_engine"], "kernelyra-native-csv-stream/1")
+                self.assertEqual(session.metadata["native_threads"], 1)
+                self.assertIsNotNone(session.data_source.arena)
                 self.assertEqual(backend.train_steps(session, 19, 3).samples, 57)
                 backend.save_checkpoint(session, checkpoint, {"schema_version": 3})
                 self.assertEqual(session.data_source.state()["stream_rows_consumed"], 57)

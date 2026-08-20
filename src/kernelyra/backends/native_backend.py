@@ -8,17 +8,24 @@ import numpy as np
 
 from ..metrics import binary_metrics, multiclass_metrics, regression_metrics
 from ..models import TaskType
-from ..native_core import NativeCoreError, NativeModel, NativeNumericCsvStream
+from ..native_core import NativeCoreError, NativeModel, NativeNumericCsvStream, NativeTensorArena
 from .base import BackendConfig, EvaluationResult, StepResult, TrainingSession
 from .numpy_backend import NumpyBackend
 
 
 class _NativeStreamingBundle:
-    def __init__(self, spec: dict[str, Any]):
-        self.train = NativeNumericCsvStream(spec, split="train")
+    def __init__(self, spec: dict[str, Any], *, arena_bytes: int | None = None):
+        self.arena = NativeTensorArena(byte_budget=arena_bytes)
+        self.train = NativeNumericCsvStream(
+            spec, split="train", core=self.arena.core, arena=self.arena, reuse_buffers=True
+        )
         try:
-            validation = NativeNumericCsvStream(spec, split="validation")
-            test = NativeNumericCsvStream(spec, split="test")
+            validation = NativeNumericCsvStream(
+                spec, split="validation", core=self.arena.core
+            )
+            test = NativeNumericCsvStream(
+                spec, split="test", core=self.arena.core
+            )
             self.validation_x, self.validation_y = validation.next_batch(
                 min(4096, validation.selected_records)
             )
@@ -46,7 +53,10 @@ class _NativeStreamingBundle:
         self.train.restore_rows(rows_consumed)
 
     def close(self) -> None:
-        self.train.close()
+        try:
+            self.train.close()
+        finally:
+            self.arena.close()
 
 
 class NativeBackend(NumpyBackend):
@@ -62,7 +72,8 @@ class NativeBackend(NumpyBackend):
         session: TrainingSession | None = None
         if config.dataset_spec:
             try:
-                native_source = _NativeStreamingBundle(config.dataset_spec)
+                arena_bytes = int(config.resource_limits.get("arena_bytes") or 0) or None
+                native_source = _NativeStreamingBundle(config.dataset_spec, arena_bytes=arena_bytes)
             except NativeCoreError:
                 # Missing values, categorical features and non-numeric targets
                 # remain supported by the general bounded-memory source.
@@ -136,11 +147,8 @@ class NativeBackend(NumpyBackend):
             target_std=float(session.state.get("target_std", 1.0)),
             threads=max(
                 1,
-                int(
-                    (os.cpu_count() or 1)
-                    * int(config.resource_limits.get("cpu_percent", 100))
-                    / 100
-                ),
+                int(config.resource_limits.get("native_threads") or 0)
+                or int((os.cpu_count() or 1) * int(config.resource_limits.get("cpu_percent", 100)) / 100),
             ),
         )
         model.import_parameters(weights, bias)
@@ -150,6 +158,7 @@ class NativeBackend(NumpyBackend):
                 "backend_version": model.core.version,
                 "native_features": model.core.features,
                 "engine": "kernelyra-cpp-c-abi",
+                "native_threads": model.threads,
             }
         )
         if config.dataset_spec and session.metadata.get("stream_engine") and config.checkpoint_path:
@@ -176,11 +185,10 @@ class NativeBackend(NumpyBackend):
         samples = 0
         loss = 0.0
         if session.data_source is None:
-            for _ in range(steps):
-                loss = self._model(session).train_random_step(
-                    session.train_x, session.train_y, batch_size
-                )
-                samples += batch_size
+            loss = self._model(session).train_random_steps(
+                session.train_x, session.train_y, batch_size, steps
+            )
+            samples = batch_size * steps
         else:
             for _ in range(steps):
                 xb, yb = session.data_source.next_batch(batch_size)

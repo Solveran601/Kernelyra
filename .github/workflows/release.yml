@@ -1,0 +1,91 @@
+name: Kernelyra release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish verified distributions to PyPI through Trusted Publishing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify Windows distributions
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native source-build toolchain
+        shell: pwsh
+        run: |
+          choco install mingw zig --no-progress --yes
+          rustup target add x86_64-pc-windows-gnu
+      - name: Install release checks
+        run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
+      - name: Check sources and build distributions
+        run: |
+          python scripts/release.py check
+          python scripts/release.py build
+          python scripts/release.py verify
+          python scripts/release.py bundle
+      - name: Prepare PyPI distributions only
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force publish-dist | Out-Null
+          Copy-Item dist\*.whl publish-dist\
+          Copy-Item dist\*.tar.gz publish-dist\
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernelyra-release-${{ github.sha }}
+          path: |
+            dist/*
+            publish-dist/*
+            RELEASE_MANIFEST.json
+            SHA256SUMS.txt
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernelyra-release-${{ github.sha }}
+          path: release
+      - name: Create GitHub release from the verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          if [ "$(jq -r '.status' release/RELEASE_MANIFEST.json)" = "pre-release" ]; then prerelease="--prerelease"; fi
+          gh release create "${{ github.ref_name }}" release/dist/* release/RELEASE_MANIFEST.json release/SHA256SUMS.txt --generate-notes --verify-tag $prerelease
+
+  pypi:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/kernelyra-ai/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernelyra-release-${{ github.sha }}
+          path: release
+      - name: Publish through PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: release/publish-dist

@@ -1,6 +1,8 @@
 // Kernelyra memory kernels. The exported surface is a dependency-free C ABI so
 // C, C++, Rust, Go, C# and Python can share the same buffers without copies.
 
+const std = @import("std");
+
 extern fn _aligned_malloc(size: usize, alignment: usize) ?*anyopaque;
 extern fn _aligned_free(pointer: ?*anyopaque) void;
 
@@ -41,4 +43,25 @@ export fn kr_zig_zero_f32(destination: [*]f32, values: usize) void {
     @setRuntimeSafety(false);
     var index: usize = 0;
     while (index < values) : (index += 1) destination[index] = 0.0;
+}
+
+/// Return 1 only when every value is finite.  This is used after every native
+/// update so a NaN/Inf never reaches an exported checkpoint.
+export fn kr_zig_all_finite_f32(values: [*]const f32, count: usize) u32 {
+    @setRuntimeSafety(false);
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        if (!std.math.isFinite(values[index])) return 0;
+    }
+    return 1;
+}
+
+/// Clamp a buffer in place for explicit recovery tools and diagnostics.
+export fn kr_zig_clip_f32(values: [*]f32, count: usize, limit: f32) void {
+    @setRuntimeSafety(false);
+    if (!std.math.isFinite(limit) or limit <= 0.0) return;
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        values[index] = @max(-limit, @min(limit, values[index]));
+    }
 }

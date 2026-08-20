@@ -42,6 +42,13 @@ def check_versions() -> None:
         raise SystemExit("Version mismatch: " + ", ".join(mismatches))
 
 
+def check_release_tag() -> None:
+    """Reject a GitHub release tag that would publish a different package version."""
+    tag = os.environ.get("GITHUB_REF_NAME", "")
+    if tag.startswith("v") and tag != f"v{version()}":
+        raise SystemExit(f"Git tag {tag!r} does not match package version v{version()!s}")
+
+
 def clean_build_state() -> None:
     for path in (ROOT / "build",):
         resolved = path.resolve()
@@ -69,6 +76,7 @@ def command_check() -> None:
 
 def command_build() -> None:
     check_versions()
+    check_release_tag()
     clean_build_state()
     run("scripts/build_native_core.py")
     run("-m", "build", "--wheel")

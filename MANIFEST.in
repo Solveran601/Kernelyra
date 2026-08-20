@@ -4,6 +4,7 @@ include worker.py start_worker.bat start_worker.ps1 requirements.txt
 recursive-include docs *.md
 recursive-include examples *.py
 recursive-include scripts *.py
+include scripts/install_benchmark_stack.ps1
 recursive-include constraints *.txt
 recursive-include tests *.py
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90
