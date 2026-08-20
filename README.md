@@ -1,14 +1,16 @@
 <p align="center">
-  <img src="assets/brand/kernelyra-logo.png" alt="Kernelyra" width="760">
+  <img src="assets/brand/kernelyra-logo.png" alt="Kernelyra" width="520">
 </p>
 
 <p align="center">
-  <img src="assets/brand/kernelyra-mark-animated.svg" alt="Animated Kernelyra mark" width="220">
+  <a href="https://github.com/Solveran601/Kernelyra/actions"><img src="https://img.shields.io/github/actions/workflow/status/Solveran601/Kernelyra/ci.yml?branch=main&label=CI" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license"></a>
+  <img src="https://img.shields.io/badge/runtime-Python%203.11%2B-3776ab" alt="Python 3.11 or newer">
 </p>
 
-<h1 align="center">Kernelyra 0.3.0a1</h1>
+<p align="center"><img src="assets/brand/kernelyra-mark-animated.svg" alt="Kernelyra mark" width="72"></p>
 
-<p align="center"><i>Native-first training with resource-aware safety.</i></p>
+<p align="center"><strong>Native-first training with resource-aware safety.</strong></p>
 
 Kernelyra is a terminal-first, code-first engine for training and fine-tuning
 tabular AI models. Training has no browser controls and the extension/plugin
