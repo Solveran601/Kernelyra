@@ -28,6 +28,12 @@ jobs:
         shell: pwsh
         run: |
           choco install mingw zig --no-progress --yes
+          $chocoBin = Join-Path $env:ChocolateyInstall 'bin'
+          Add-Content -Path $env:GITHUB_PATH -Value $chocoBin
+          $env:Path = "$chocoBin;$env:Path"
+          zig version
+          g++ --version
+          gfortran --version
           rustup target add x86_64-pc-windows-gnu
       - name: Install release checks
         run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
