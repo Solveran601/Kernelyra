@@ -188,13 +188,17 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 defines.append("-DKR_HAS_FORTRAN_NUMERIC=1")
             if rust_manifest.is_file():
                 rust_target = "x86_64-pc-windows-gnu"
+                rust_target_dir = build / "cargo-target"
                 rust_library = (
-                    root / "native" / "core" / "rust" / "target" / rust_target / "release"
+                    rust_target_dir / rust_target / "release"
                     / "libkernelyra_rust_policy.a"
                 )
+                rust_environment = os.environ.copy()
+                rust_environment["CARGO_TARGET_DIR"] = str(rust_target_dir)
                 result = subprocess.run(  # nosec B603
                     [cargo, "build", "--manifest-path", str(rust_manifest), "--release", "--target", rust_target],
                     cwd=root,
+                    env=rust_environment,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
