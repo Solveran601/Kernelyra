@@ -50,7 +50,7 @@ jobs:
         with: {python-version: "3.12"}
       - run: python -m pip install ".[dev]" -c constraints/release.txt
       - run: python -m bandit -q -r src/kernelyra
-      - run: python -m pip_audit --strict
+      - run: python -m pip_audit --strict -r requirements.txt
 
   package-release:
     runs-on: windows-latest
