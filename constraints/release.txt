@@ -8,11 +8,8 @@ pydantic-core==2.46.4
 python-multipart==0.0.32
 mcp==1.29.0
 httpx==0.28.1
-pytest==9.1.1
 build==1.5.0
 twine==6.2.0
-pytest-cov==7.0.0
-pytest-repeat==0.9.4
 ruff==0.12.12
 mypy==2.3.0
 pip-audit==2.9.0

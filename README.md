@@ -77,14 +77,11 @@ is not a claim that a format can be extracted or trained.
 The supported release target is Windows x64 on Python 3.11–3.13. Linux, macOS,
 and Windows ARM are not release targets for 0.3.
 
-## Documentation
+## More information
 
-- [CLI reference](docs/cli.md)
-- [Datasets and training inputs](docs/datasets.md)
-- [Backends](docs/backends.md)
-- [Python and SDK API](docs/sdk.md)
-- [0.4 roadmap](docs/roadmap-0.4.md)
-- [License](LICENSE)
+Run `python -m kernelyra --help` to see the available commands. The repository
+keeps the runtime interface intentionally small during the 0.3 alpha period.
+See the [license](LICENSE) for distribution terms.
 
 Performance claims belong in reproducible reports that identify the workload,
 hardware, package versions, accuracy, and memory measurement. Kernelyra ships a

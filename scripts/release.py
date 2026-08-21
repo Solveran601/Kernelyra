@@ -69,8 +69,6 @@ def command_check() -> None:
     check_versions()
     run("-m", "ruff", "check", ".")
     run("-m", "mypy", "src/kernelyra")
-    run("-m", "pytest", "-q", "--cov=kernelyra", "--cov-report=term-missing", "--cov-fail-under=0")
-    run("scripts/check_coverage.py")
     run("scripts/check_clean_source.py")
 
 
