@@ -35,7 +35,6 @@ SOURCE_DIRS = (
     "constraints",
     "examples",
     "native",
-    "packages",
     "scripts",
     "sdks",
     "src",
