@@ -29,8 +29,8 @@ JSONL-протоколе для SDK на других языках.
 
 ## Установка из исходников
 
-Пакета в PyPI и GitHub Release пока нет. Текущая alpha-версия устанавливается
-из исходного checkout:
+Текущая alpha-версия устанавливается из исходников. Публикация на PyPI для
+этого релиза не настроена:
 
 ```powershell
 git clone https://github.com/Solveran601/Kernelyra.git

@@ -32,8 +32,8 @@ API, and a JSONL protocol used by the bundled language SDKs.
 
 ## Install from source
 
-There is no PyPI package or GitHub Release yet. Install the current alpha from
-a source checkout:
+Install the current alpha from a source checkout. PyPI publication is not
+configured for this release:
 
 ```powershell
 git clone https://github.com/Solveran601/Kernelyra.git
