@@ -65,10 +65,10 @@ def clean_build_state() -> None:
 
 
 def command_check() -> None:
-    run("scripts/check_clean_source.py")
+    run("scripts/check_clean_source.py", "--allow-generated-egg-info")
     check_versions()
     run("-m", "ruff", "check", "src/kernelyra", "--ignore", "I001,UP012,UP038")
-    run("scripts/check_clean_source.py")
+    run("scripts/check_clean_source.py", "--allow-generated-egg-info")
 
 
 def command_build() -> None:

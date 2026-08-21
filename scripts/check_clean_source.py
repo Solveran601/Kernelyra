@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from collections.abc import Collection
 from pathlib import Path
@@ -41,11 +42,22 @@ def forbidden_name(raw_name: str, *, include_python_cache: bool = True) -> bool:
     return (lower.endswith(".lock") and (not parts or parts[-1].lower() != "cargo.lock")) or lower.endswith("demo_dataset.csv")
 
 
-def find_forbidden(root: Path, *, include_python_cache: bool = True, ignore_top_level: Collection[str] = ()) -> list[str]:
+def find_forbidden(
+    root: Path,
+    *,
+    include_python_cache: bool = True,
+    ignore_top_level: Collection[str] = (),
+    allow_generated_egg_info: bool = False,
+) -> list[str]:
     ignored_roots = {".git", ".venv", "dist", "build", *ignore_top_level}
     found: list[str] = []
     for path in root.rglob("*"):
         relative = path.relative_to(root).as_posix()
+        if allow_generated_egg_info and (
+            relative == "src/kernelyra_ai.egg-info"
+            or relative.startswith("src/kernelyra_ai.egg-info/")
+        ):
+            continue
         if relative.split("/", 1)[0] not in ignored_roots and forbidden_name(relative, include_python_cache=include_python_cache):
             found.append(relative)
     return sorted(set(found))
@@ -69,8 +81,19 @@ def find_personal_paths(root: Path, *, ignore_top_level: Collection[str] = ()) -
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--allow-generated-egg-info",
+        action="store_true",
+        help="ignore the local egg-info directory created by an editable install",
+    )
+    args = parser.parse_args()
     local = {".kernelyra", ".trainflow", ".test_workspaces", ".benchmarks"}
-    forbidden = find_forbidden(ROOT, ignore_top_level=local)
+    forbidden = find_forbidden(
+        ROOT,
+        ignore_top_level=local,
+        allow_generated_egg_info=args.allow_generated_egg_info,
+    )
     if forbidden:
         print("Forbidden source artifacts:")
         print("\n".join(forbidden))
