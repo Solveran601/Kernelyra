@@ -62,6 +62,7 @@ KR_API size_t kr_rust_next_chunk_size(
     size_t maximum_records,
     uint64_t sequence,
     uint64_t seed);
+KR_API uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length);
 KR_API void kr_numeric_gradient_f32(
     const float* x, const float* errors, size_t rows, size_t features, float* gradient);
 KR_API float kr_kernel_dot_f32(const float* left, const float* right, size_t values);

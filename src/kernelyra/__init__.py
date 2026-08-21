@@ -21,6 +21,7 @@ from .errors import (
     WorkerTimeoutError,
 )
 from .extraction import TextChunk, extract_folder, extract_text, text_format_count
+from .format_intelligence import advise_path
 from .inference import run_inference_check
 from .models import (
     BackendInfo,
@@ -101,4 +102,5 @@ __all__ = [
     "plan",
     "train",
     "autotune_execution",
+    "advise_path",
 ]

@@ -23,6 +23,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml" --release --target ${KERNELYRA_RUST_TARGET}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/lib.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
   VERBATIM)
 add_custom_target(kernelyra_rust_policy DEPENDS "${KERNELYRA_RUST_LIBRARY}")
 add_library(kernelyra_rust_policy_static STATIC IMPORTED GLOBAL)

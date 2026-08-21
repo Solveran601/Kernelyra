@@ -40,6 +40,8 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("doctor")
     commands.add_parser("capabilities")
     commands.add_parser("formats", help="List recognized routes and installed trainable adapters")
+    advise = commands.add_parser("advise", help="Inspect a file with the bounded Rust format probe and suggest a safe AI data path")
+    advise.add_argument("path")
     commands.add_parser("modes", help="Show the four adaptive execution programs for this computer")
     tune = commands.add_parser("tune", help="Preview deterministic native execution tuning")
     tune.add_argument("--profile", choices=["auto", "eco", "low-memory", "balanced", "performance", "workstation", "custom"], default="auto")
@@ -377,6 +379,10 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             "model_formats": list(CHECKPOINT_FORMATS),
             "contract": "recognized != extractable != directly trainable; every item reports its actual level",
         }
+    if args.command == "advise":
+        from .format_intelligence import advise_path
+
+        return True, advise_path(args.path)
     if args.command == "modes":
         from .hardware import EXECUTION_MODES, detect_hardware, execution_policy, recommend_profile
 
