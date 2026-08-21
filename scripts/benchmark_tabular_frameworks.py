@@ -85,6 +85,11 @@ def torch_linear(x: np.ndarray, y: np.ndarray, steps: int, learning_rate: float,
     inputs = torch.from_numpy(x)
     labels = torch.from_numpy(y.astype(np.float32))
     model = torch.nn.Linear(x.shape[1], 1)
+    # Match the zero initialization used by NumPy, JAX and the native runner.
+    # A random torch layer would measure initialization choice, not the update.
+    with torch.no_grad():
+        model.weight.zero_()
+        model.bias.zero_()
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate)
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)

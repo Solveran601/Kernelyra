@@ -9,6 +9,7 @@
 
 mod chunks;
 mod hash;
+mod signature;
 mod split;
 
 #[unsafe(export_name = "kr_rust_policy_mix_u64")]
@@ -46,6 +47,21 @@ pub extern "C" fn kr_rust_next_chunk_size(
     )
 }
 
+/// Classify an untrusted file prefix without parsing or allocating from it.
+///
+/// # Safety
+/// `bytes` must either be null with a zero length, or reference at least
+/// `length` readable bytes. Only the first 4096 bytes are examined.
+#[unsafe(export_name = "kr_rust_policy_probe_signature")]
+pub unsafe extern "C" fn kr_rust_probe_signature(bytes: *const u8, length: usize) -> u32 {
+    if bytes.is_null() || length == 0 {
+        return signature::UNKNOWN;
+    }
+    let bounded = length.min(4096);
+    let prefix = unsafe { core::slice::from_raw_parts(bytes, bounded) };
+    signature::classify(prefix)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,5 +78,14 @@ mod tests {
         assert!((256..=768).contains(&kr_rust_next_chunk_size(10_000, 512, 256, 768, 3, 99)));
         assert_eq!(kr_rust_next_chunk_size(19, 512, 256, 768, 3, 99), 19);
         assert_eq!(kr_rust_next_chunk_size(10, 0, 1, 2, 0, 0), 0);
+    }
+
+    #[test]
+    fn signatures_are_classified_from_a_bounded_prefix() {
+        assert_eq!(signature::classify(b"PAR1schema"), signature::PARQUET);
+        assert_eq!(signature::classify(b"SQLite format 3\0"), signature::SQLITE);
+        assert_eq!(signature::classify(b"\x89PNG\r\n\x1a\npixels"), signature::PNG);
+        assert_eq!(signature::classify(b"a,b\n1,2\n"), signature::DELIMITED_TEXT);
+        assert_eq!(signature::classify(&[0; 32]), signature::UNKNOWN);
     }
 }

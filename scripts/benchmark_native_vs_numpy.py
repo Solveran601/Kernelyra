@@ -113,6 +113,9 @@ def run_native(x: np.ndarray, y: np.ndarray, *, steps: int, lr: float, seed: int
         learning_rate=lr, weight_decay=0.0, threads=threads,
     )
     try:
+        # The baseline uses this exact initialization.  Import it explicitly
+        # instead of assuming the independent native RNG stays bit-identical.
+        model.import_parameters(native_initial_weights(x.shape[1], seed), np.float32(0.0))
         peak_memory = working_set_bytes()
         started = time.perf_counter()
         for _ in range(steps):

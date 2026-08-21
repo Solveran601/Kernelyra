@@ -13,7 +13,7 @@
 
 <p align="center"><strong>Native-first tabular model training with resource-aware safety.</strong></p>
 
-Kernelyra 0.3.0a1 is a terminal-first library for training and fine-tuning
+Kernelyra 0.4.0a1 is a terminal-first library for training and fine-tuning
 tabular models. It provides one automatic planning path through the CLI, Python
 API, and a JSONL protocol used by the bundled language SDKs.
 

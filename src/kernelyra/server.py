@@ -39,7 +39,7 @@ from .models import DatasetInfo, RunConfig, RunInfo
 from .security import LOOPBACK_HOSTS, ensure_agent_secret, ensure_user_secret, validate_daemon_bind
 from .workspace import Workspace, batch_plan_for
 
-VERSION = "0.3.0a1"
+VERSION = "0.4.0a1"
 
 
 class BatchPlanRequest(BaseModel):
