@@ -31,13 +31,14 @@ jobs:
           $installed = $false
           foreach ($attempt in 1..3) {
             choco install mingw zig --no-progress --yes
-            if ($LASTEXITCODE -eq 0) {
+            $toolsPresent = (Get-Command zig -ErrorAction SilentlyContinue) -and (Get-Command g++ -ErrorAction SilentlyContinue) -and (Get-Command gfortran -ErrorAction SilentlyContinue)
+            if ($LASTEXITCODE -eq 0 -and $toolsPresent) {
               $installed = $true
               break
             }
             if ($attempt -lt 3) { Start-Sleep -Seconds (20 * $attempt) }
           }
-          if (-not $installed) { throw 'Chocolatey could not install the native toolchain after three attempts.' }
+          if (-not $installed) { throw 'Chocolatey did not provide zig, g++, and gfortran after three attempts.' }
           $chocoBin = Join-Path $env:ChocolateyInstall 'bin'
           Add-Content -Path $env:GITHUB_PATH -Value $chocoBin
           $env:Path = "$chocoBin;$env:Path"
