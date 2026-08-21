@@ -485,20 +485,22 @@ class StreamingTabularSource:
         return self._encode_many(rows)
 
     def _producer_loop(self, chunk_size: int) -> None:
-        assert self._queue is not None
+        queue_target = self._queue
+        if queue_target is None:
+            raise RuntimeError("Streaming queue was not initialized")
         try:
             while not self._stop.is_set():
                 for item in self._next_values(chunk_size):
                     while not self._stop.is_set():
                         try:
-                            self._queue.put(item, timeout=.1)
+                            queue_target.put(item, timeout=.1)
                             break
                         except queue.Full:
                             continue
         except BaseException as error:
             while not self._stop.is_set():
                 try:
-                    self._queue.put(error, timeout=.1)
+                    queue_target.put(error, timeout=.1)
                     break
                 except queue.Full:
                     continue
