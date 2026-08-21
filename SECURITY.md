@@ -45,5 +45,5 @@ Source ZIPs are built from an allowlist and scanned after extraction. Wheel,
 sdist and source ZIP verification rejects runtime state, SQLite, locks, PID,
 checkpoints, arrays, caches, logs, executables and personal absolute paths.
 
-The detailed threat analysis and residual risks are in
-[`docs/threat-model.md`](docs/threat-model.md).
+This document is the current public summary of security boundaries and residual
+risks for the alpha release.

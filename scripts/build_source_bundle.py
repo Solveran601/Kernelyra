@@ -9,9 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
 
-from tests.clean_source import find_forbidden, find_personal_paths, forbidden_name  # noqa: E402
+from check_clean_source import find_forbidden, find_personal_paths, forbidden_name  # noqa: E402
 
 ROOT_FILES = (
     ".gitignore",
@@ -33,14 +33,11 @@ ROOT_FILES = (
 SOURCE_DIRS = (
     ".github",
     "constraints",
-    "docs",
     "examples",
     "native",
-    "packages",
     "scripts",
     "sdks",
     "src",
-    "tests",
 )
 
 

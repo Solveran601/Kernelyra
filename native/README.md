@@ -12,7 +12,6 @@ native/
 ├── bridge/cpp/      compact C ABI, bounded CSV streaming and safe fallback
 ├── bindings/c/      C cursor library for bounded context-safe chunks
 ├── include/         stable C/C++/Rust-facing ABI header
-├── tests/           C ABI conformance smoke test
 ├── tools/           safe dataset signature probe
 └── CMakeLists.txt   reproducible native build
 ```

@@ -131,7 +131,8 @@ class FormatRouter:
         if trainable_files:
             first = trainable_files[0]
             ingestor = self.registry.for_path(first)
-            assert ingestor is not None
+            if ingestor is None:
+                raise DatasetError("No direct ingestor is available for the selected tabular file")
             inspected = ingestor.inspect(first)
             directory_result.update(
                 {
