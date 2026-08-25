@@ -15,14 +15,17 @@ target_include_directories(kernelyra_core PRIVATE include)
 target_compile_definitions(kernelyra_core PRIVATE KR_HAS_FORTRAN_NUMERIC=1)
 find_program(KERNELYRA_CARGO_EXECUTABLE cargo REQUIRED)
 set(KERNELYRA_RUST_TARGET x86_64-pc-windows-gnu)
+set(KERNELYRA_RUST_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/cargo-target")
 set(KERNELYRA_RUST_LIBRARY
-  "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/target/${KERNELYRA_RUST_TARGET}/release/libkernelyra_rust_policy.a")
+  "${KERNELYRA_RUST_TARGET_DIR}/${KERNELYRA_RUST_TARGET}/release/libkernelyra_rust_policy.a")
 add_custom_command(
   OUTPUT "${KERNELYRA_RUST_LIBRARY}"
-  COMMAND "${KERNELYRA_CARGO_EXECUTABLE}" build --manifest-path
+  COMMAND "${CMAKE_COMMAND}" -E env "CARGO_TARGET_DIR=${KERNELYRA_RUST_TARGET_DIR}"
+          "${KERNELYRA_CARGO_EXECUTABLE}" build --manifest-path
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml" --release --target ${KERNELYRA_RUST_TARGET}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/lib.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
   VERBATIM)
 add_custom_target(kernelyra_rust_policy DEPENDS "${KERNELYRA_RUST_LIBRARY}")
 add_library(kernelyra_rust_policy_static STATIC IMPORTED GLOBAL)

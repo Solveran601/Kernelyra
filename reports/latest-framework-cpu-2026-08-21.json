@@ -1,0 +1,195 @@
+{
+  "contract": "kernelyra-latest-framework-evidence/1",
+  "collected_at_utc": "2026-08-21T09:36:12.656001+00:00",
+  "environment": {
+    "python": "3.12.9",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "cpu_logical_cores": 12,
+    "numpy": "2.5.1",
+    "torch": "2.13.0+cpu",
+    "tensorflow": "2.21.0",
+    "jax": "0.11.0"
+  },
+  "methodology": {
+    "workload": "synthetic binary full-batch logistic regression",
+    "rows": 1024,
+    "features": 128,
+    "steps": 20,
+    "runs_per_framework": 3,
+    "learning_rate": 0.03,
+    "seed": 20260820,
+    "initialization": "zero weights and zero bias for all matched linear runners",
+    "comparison_scope": "CPU only; this small workload is not a universal performance claim"
+  },
+  "measurements": [
+    {
+      "contract": "kernelyra-framework-benchmark/1",
+      "workload": {
+        "rows": 1024,
+        "features": 128,
+        "steps": 20,
+        "runs": 3,
+        "learning_rate": 0.03,
+        "seed": 20260820
+      },
+      "results": [
+        {
+          "name": "kernelyra_native",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.0028735999949276447,
+          "updates_per_second": 6959.910925425647,
+          "accuracy": 0.9287109375,
+          "distribution_version": null,
+          "note": null
+        },
+        {
+          "name": "numpy",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.0006018999993102625,
+          "updates_per_second": 33228.111019967895,
+          "accuracy": 0.9287109375,
+          "distribution_version": "2.5.1",
+          "note": null
+        },
+        {
+          "name": "torch",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.02111249999870779,
+          "updates_per_second": 947.3060983409885,
+          "accuracy": 0.9287109375,
+          "distribution_version": "2.13.0",
+          "note": null
+        }
+      ],
+      "comparison_rule": "Only matched_linear rows execute the same full-batch logistic-regression update. Tree and online rows are capability measurements, not speed comparisons.",
+      "installed_training_dependencies": [
+        "torch",
+        "tensorflow",
+        "jax",
+        "flax",
+        "optax",
+        "scikit-learn",
+        "xgboost",
+        "lightgbm",
+        "catboost",
+        "river"
+      ]
+    },
+    {
+      "contract": "kernelyra-framework-benchmark/1",
+      "workload": {
+        "rows": 1024,
+        "features": 128,
+        "steps": 20,
+        "runs": 3,
+        "learning_rate": 0.03,
+        "seed": 20260820
+      },
+      "results": [
+        {
+          "name": "kernelyra_native",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.002117800002451986,
+          "updates_per_second": 9443.762384004167,
+          "accuracy": 0.9287109375,
+          "distribution_version": null,
+          "note": null
+        },
+        {
+          "name": "numpy",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.0006500999952550046,
+          "updates_per_second": 30764.49799411998,
+          "accuracy": 0.9287109375,
+          "distribution_version": "2.5.1",
+          "note": null
+        },
+        {
+          "name": "jax",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.1785946000018157,
+          "updates_per_second": 111.98546876443446,
+          "accuracy": 0.9287109375,
+          "distribution_version": "0.11.0",
+          "note": null
+        }
+      ],
+      "comparison_rule": "Only matched_linear rows execute the same full-batch logistic-regression update. Tree and online rows are capability measurements, not speed comparisons.",
+      "installed_training_dependencies": [
+        "torch",
+        "tensorflow",
+        "jax",
+        "flax",
+        "optax",
+        "scikit-learn",
+        "xgboost",
+        "lightgbm",
+        "catboost",
+        "river"
+      ]
+    },
+    {
+      "contract": "kernelyra-framework-benchmark/1",
+      "workload": {
+        "rows": 1024,
+        "features": 128,
+        "steps": 20,
+        "runs": 3,
+        "learning_rate": 0.03,
+        "seed": 20260820
+      },
+      "results": [
+        {
+          "name": "kernelyra_native",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.0030958000061218627,
+          "updates_per_second": 6460.365643920966,
+          "accuracy": 0.9287109375,
+          "distribution_version": null,
+          "note": null
+        },
+        {
+          "name": "numpy",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.000756800000090152,
+          "updates_per_second": 26427.06130763418,
+          "accuracy": 0.9287109375,
+          "distribution_version": "2.5.1",
+          "note": null
+        },
+        {
+          "name": "tensorflow",
+          "group": "matched_linear",
+          "status": "ok",
+          "seconds": 0.15829369999846676,
+          "updates_per_second": 126.34741622814882,
+          "accuracy": 0.9287109375,
+          "distribution_version": "2.21.0",
+          "note": null
+        }
+      ],
+      "comparison_rule": "Only matched_linear rows execute the same full-batch logistic-regression update. Tree and online rows are capability measurements, not speed comparisons.",
+      "installed_training_dependencies": [
+        "torch",
+        "tensorflow",
+        "jax",
+        "flax",
+        "optax",
+        "scikit-learn",
+        "xgboost",
+        "lightgbm",
+        "catboost",
+        "river"
+      ]
+    }
+  ]
+}

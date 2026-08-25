@@ -13,6 +13,7 @@ FORBIDDEN_PREFIXES = {
     ".trainflow",
     "native/build",
     "native/rust/target",
+    "native/core/rust/target",
     "sdks/csharp/bin",
     "sdks/csharp/obj",
     "sdks/rust/target",

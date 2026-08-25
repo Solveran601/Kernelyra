@@ -24,10 +24,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install native source-build toolchain
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-gcc-fortran
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Expose and verify native source-build toolchain
         shell: pwsh
         run: |
-          choco install mingw zig --no-progress --yes
+          $ErrorActionPreference = 'Stop'
+          $mingwBin = Join-Path '${{ steps.msys2.outputs.msys2-location }}' 'mingw64\bin'
+          if (-not (Test-Path -LiteralPath $mingwBin)) { throw "Missing MSYS2 MinGW toolchain: $mingwBin" }
+          Add-Content -Path $env:GITHUB_PATH -Value $mingwBin
+          $env:Path = "$mingwBin;$env:Path"
+          zig version
+          g++ --version
+          gfortran --version
           rustup target add x86_64-pc-windows-gnu
       - name: Install release checks
         run: python -m pip install ".[dev,mcp]" -c constraints/release.txt
@@ -72,7 +90,7 @@ jobs:
         run: |
           prerelease=""
           if [ "$(jq -r '.status' release/RELEASE_MANIFEST.json)" = "pre-release" ]; then prerelease="--prerelease"; fi
-          gh release create "${{ github.ref_name }}" release/dist/* release/RELEASE_MANIFEST.json release/SHA256SUMS.txt --generate-notes --verify-tag $prerelease
+          gh release create "${{ github.ref_name }}" release/dist/*.whl release/dist/*.zip release/dist/*.tar.gz release/RELEASE_MANIFEST.json release/SHA256SUMS.txt --generate-notes --verify-tag $prerelease
 
   pypi:
     if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi && startsWith(github.ref, 'refs/tags/v')

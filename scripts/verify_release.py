@@ -277,7 +277,7 @@ payload = {
     'new_files': sorted(set(os.listdir('.')) - before_files),
 }
 print(json.dumps(payload, sort_keys=True))
-assert payload['version'] == '0.3.0a1'
+assert payload['version'] == '0.4.0a1'
 assert payload['tensorflow_loaded'] is False
 assert payload['new_threads'] == []
 assert payload['new_files'] == []
@@ -302,10 +302,10 @@ assert payload['new_files'] == []
                 env=smoke_env,
             )
 
-        if cli("version").stdout.strip() != "0.3.0a1":
+        if cli("version").stdout.strip() != "0.4.0a1":
             raise SystemExit("Installed-wheel CLI reported an unexpected version")
         doctor = json.loads(cli("--json", "doctor").stdout)
-        if not doctor.get("ok") or doctor.get("version") != "0.3.0a1":
+        if not doctor.get("ok") or doctor.get("version") != "0.4.0a1":
             raise SystemExit(f"Installed-wheel doctor failed: {doctor}")
         capabilities = json.loads(cli("--json", "capabilities").stdout)
         if not any(item.get("name") == "numpy" and item.get("available") for item in capabilities["backends"]):
@@ -346,7 +346,7 @@ assert payload['new_files'] == []
         if set(public_health) != {"ok", "version", "protocol"}:
             raise SystemExit(f"Public health leaked private fields: {public_health}")
         health = json.loads(cli("daemon", "status").stdout)
-        if health.get("version") != "0.3.0a1" or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
+        if health.get("version") != "0.4.0a1" or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
             raise SystemExit(f"Unexpected installed-wheel daemon health: {health}")
 
         _expect_get_status(url, "/", 404)

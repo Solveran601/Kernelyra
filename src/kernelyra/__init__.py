@@ -21,6 +21,7 @@ from .errors import (
     WorkerTimeoutError,
 )
 from .extraction import TextChunk, extract_folder, extract_text, text_format_count
+from .format_intelligence import advise_path
 from .inference import run_inference_check
 from .models import (
     BackendInfo,
@@ -40,7 +41,7 @@ from .tuning import autotune_execution
 from .native_core import NativeTensorArena
 from .workspace import Kernelyra, RunHandle, Workspace
 
-__version__ = "0.3.0a1"
+__version__ = "0.4.0a1"
 
 Dataset = DatasetInfo
 Run = RunInfo
@@ -101,4 +102,5 @@ __all__ = [
     "plan",
     "train",
     "autotune_execution",
+    "advise_path",
 ]

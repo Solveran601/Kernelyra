@@ -71,6 +71,7 @@ uint32_t kr_rust_policy_split_for_key(
 size_t kr_rust_policy_next_chunk_size(
     size_t remaining_records, size_t target_records, size_t minimum_records,
     size_t maximum_records, uint64_t sequence, uint64_t seed);
+uint32_t kr_rust_policy_probe_signature(const uint8_t* bytes, size_t length);
 #endif
 }
 
@@ -1182,6 +1183,16 @@ size_t kr_rust_next_chunk_size(
 #endif
   return kernelyra::policy::next_chunk_size(
       remaining_records, target_records, minimum_records, maximum_records, sequence, seed);
+}
+
+uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length) {
+  if (bytes == nullptr || length == 0U) return 0U;
+#if KR_HAS_RUST_POLICY
+  if (component_enabled(KR_COMPONENT_RUST_POLICY)) {
+    return kr_rust_policy_probe_signature(bytes, length);
+  }
+#endif
+  return 0U;
 }
 
 uint32_t kr_core_component_mask(void) { return compiled_component_mask; }
