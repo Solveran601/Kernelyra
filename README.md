@@ -41,7 +41,8 @@ the supplied input order. A detected group/context column is currently an
 
 ## Install from source
 
-There is no PyPI package or GitHub Release asset for this alpha yet.
+PyPI publication is not configured. After the tagged GitHub Actions build succeeds,
+Windows release artifacts for this alpha are attached to its GitHub pre-release.
 
 ```powershell
 git clone https://github.com/Solveran601/Kernelyra.git

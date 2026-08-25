@@ -2,18 +2,18 @@
   "artifacts": [
     {
       "name": "kernelyra_ai-0.5.0a1-py3-none-win_amd64.whl",
-      "sha256": "b0220a1fc7f557aad17d4ab6c162055b6236010493d9f7a30b0be1331aabd97a",
-      "size_bytes": 1620702
+      "sha256": "94e2ec15b0e56b1ac7e01c12bb1b5abcfd43db80c988681f53559689b1d937b4",
+      "size_bytes": 1620746
     },
     {
       "name": "kernelyra_ai-0.5.0a1-source.zip",
-      "sha256": "172e346ffc2bfc642c09ac0a6be30ca4bb50a2047191de2a6a55d61d3ea3e17d",
-      "size_bytes": 1046745
+      "sha256": "c563a95fc447ac16f617e75d741e349154648e73d42af4858baacd382d77c86a",
+      "size_bytes": 1046848
     },
     {
       "name": "kernelyra_ai-0.5.0a1.tar.gz",
-      "sha256": "715a2732355fb0e7128abb2cf8ee238f13eb177e83f29fdb1c10c1fc338b9896",
-      "size_bytes": 946949
+      "sha256": "ced1f99466f515f462cb9a7e6b9b7225e055ed2f379d29f1620682eacc52a775",
+      "size_bytes": 947090
     }
   ],
   "contract": "kernelyra-release-manifest/1",

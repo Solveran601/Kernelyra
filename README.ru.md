@@ -39,7 +39,8 @@ Data Doctor намеренно ограничен выборкой: выводы
 
 ## Установка из исходников
 
-Для этой alpha-версии ещё нет пакета на PyPI и готовых GitHub Release assets.
+Публикация на PyPI не настроена. После успешной сборки GitHub Actions для тега
+Windows-артефакты этой alpha-версии прикрепляются к её GitHub pre-release.
 
 ```powershell
 git clone https://github.com/Solveran601/Kernelyra.git
