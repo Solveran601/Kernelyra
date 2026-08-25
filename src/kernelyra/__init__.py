@@ -3,6 +3,7 @@
 from .async_client import AsyncKernelyraClient
 from .auto import AutoTrainer, TrainingPlan, TrainingResult, finetune, plan, train
 from .client import DaemonClient, RemoteError
+from .data_health import analyze_inspection, inspect_path, recommend_chunk_policy
 from .easy import Config, Engine, Settings, TrainingConfig, fit
 from .errors import (
     AccessDeniedError,
@@ -35,13 +36,14 @@ from .models import (
     RunStatus,
     TaskType,
 )
+from .native_core import NativeTensorArena
 from .planning import ContextChunk, ContextChunkPlanner
 from .quality import QualityGate
+from .reports import build_experiment_report, write_experiment_report
 from .tuning import autotune_execution
-from .native_core import NativeTensorArena
 from .workspace import Kernelyra, RunHandle, Workspace
 
-__version__ = "0.4.0a1"
+__version__ = "0.5.0a1"
 
 Dataset = DatasetInfo
 Run = RunInfo
@@ -52,6 +54,7 @@ __all__ = [
     "ApprovalError",
     "AsyncKernelyraClient",
     "AutoTrainer",
+    "analyze_inspection",
     "BackendInfo",
     "ConfigurationError",
     "Config",
@@ -97,10 +100,14 @@ __all__ = [
     "extract_folder",
     "extract_text",
     "fit",
+    "build_experiment_report",
+    "inspect_path",
+    "recommend_chunk_policy",
     "run_inference_check",
     "text_format_count",
     "plan",
     "train",
+    "write_experiment_report",
     "autotune_execution",
     "advise_path",
 ]

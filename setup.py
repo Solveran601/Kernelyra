@@ -18,7 +18,7 @@ class PlatformNativeWheel(bdist_wheel):
 
     def run(self) -> None:
         if sys.platform != "win32":
-            raise RuntimeError("Kernelyra 0.3 is released for Windows only")
+            raise RuntimeError("Kernelyra alpha releases are supported on Windows only")
         suffix = ".dll"
         native_bin = Path(__file__).parent / "src" / "kernelyra" / "native_bin"
         if not any(native_bin.glob(f"*{suffix}")):

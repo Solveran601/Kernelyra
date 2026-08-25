@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.5.0a1 — 2026-08-25
+
+- Added Data Doctor: bounded sample findings, signed dataset contracts,
+  deterministic split recommendations and variable-range chunk plans.
+- Added deterministic stratified and source-order temporal materialized splits.
+  Group/context detection is explicitly advisory until a group-exclusive
+  splitter is implemented.
+- Added Model Guard V2 score-trend evidence, portable experiment reports and
+  `dataset doctor` / `report` CLI commands.
+- Added the bundled PowerShell module and a source-checked V3 workflow
+  benchmark that records local measurements without universal speed claims.
+- Updated the public README files to state only tabular capabilities and
+  tested Windows x64/Python 3.11–3.13 support.
+
+## 0.4.0a1 — 2026-08-21
 
 - Restricted the 0.3 release and CI support matrix to Windows x64; other OS
   groundwork remains experimental and is not advertised as supported.

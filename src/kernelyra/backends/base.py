@@ -26,6 +26,7 @@ class BackendConfig:
     precision: str = "auto"
     data_workers: int = 0
     prefetch: int = 1
+    split_strategy: str = "random"
 
 
 @dataclass(slots=True)

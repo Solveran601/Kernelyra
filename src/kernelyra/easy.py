@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Self
 
 from .auto import AutoTrainer, TrainingPlan, TrainingResult
+from .reports import build_experiment_report, write_experiment_report
 
 
 class TrainingConfig:
@@ -220,6 +221,17 @@ class Engine:
     def inspect(self, dataset: str | Path) -> dict[str, Any]:
         """Inspect a file or folder without importing or training it."""
         return self._trainer.workspace.datasets.inspect(Path(dataset).expanduser().resolve())
+
+    def doctor(self, dataset: str | Path, target: str | None = None) -> dict[str, Any]:
+        """Run bounded data-health checks and create a dataset contract."""
+        return self._trainer.workspace.datasets.doctor(Path(dataset).expanduser().resolve(), target)
+
+    def report(self, run_id: str, output: str | Path | None = None) -> dict[str, Any]:
+        """Build a portable experiment report and optionally write it to disk."""
+        report = build_experiment_report(self._trainer.workspace, run_id)
+        if output is not None:
+            report["output"] = str(write_experiment_report(report, output))
+        return report
 
     def _options(
         self,

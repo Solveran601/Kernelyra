@@ -35,6 +35,8 @@ SOURCE_DIRS = (
     "constraints",
     "examples",
     "native",
+    "powershell",
+    "reports",
     "scripts",
     "sdks",
     "src",

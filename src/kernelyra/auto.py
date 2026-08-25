@@ -10,6 +10,7 @@ from typing import Any
 
 from .architectures import resolve_training_contract
 from .batch import plan_batch
+from .data_health import analyze_inspection
 from .errors import ConfigurationError, DatasetError, RunError
 from .hardware import PROFILE_PRESETS, execution_policy, recommend_profile
 from .models import DatasetInfo, RunConfig, RunInfo, RunStatus, TaskType
@@ -89,6 +90,30 @@ def _stream_limit(profile: str, maximum: int) -> int:
     return min(maximum, int(execution_policy(profile, {})["stream_limit"]))
 
 
+def _estimate_text_records(source: Path, size: int, sampled: int, preview_bytes: int, preview_count: int) -> int:
+    """Estimate newline-delimited table rows with at most an 8 MiB read.
+
+    The router intentionally exposes a small preview.  For CSV/TSV/JSONL,
+    counting a bounded prefix gives a much better planning estimate without
+    materialising the dataset or scanning a multi-gigabyte source in full.
+    """
+    if not source.is_file() or source.suffix.lower() not in {".csv", ".tsv", ".jsonl", ".ndjson"}:
+        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
+    sample_size = min(size, 8 * 1024 * 1024)
+    try:
+        with source.open("rb") as handle:
+            prefix = handle.read(sample_size)
+    except OSError:
+        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
+    lines = prefix.count(b"\n")
+    if source.suffix.lower() in {".csv", ".tsv"}:
+        lines = max(0, lines - 1)
+    if size <= sample_size:
+        return max(sampled, lines + (1 if prefix and not prefix.endswith(b"\n") else 0))
+    bytes_per_record = sample_size / max(1, lines)
+    return max(sampled, int(size / bytes_per_record))
+
+
 def _coerce(name: str, value: Any) -> Any:
     if value is None:
         return None
@@ -160,6 +185,9 @@ class TrainingPlan:
     data_mode: str
     config_path: str | None
     sources: dict[str, str]
+    data_contract: dict[str, Any]
+    split_policy: dict[str, Any]
+    chunk_policy: dict[str, Any]
     warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -326,7 +354,11 @@ class AutoTrainer:
         preview_bytes = max(1, sum(len(str(row)) for row in inspection.get("preview") or []))
         preview_count = max(1, len(inspection.get("preview") or []))
         known_records = inspection.get("rows") or (shape[0] if len(shape) >= 2 else None)
-        records = int(known_records) if known_records else max(sampled, int(size / max(1, preview_bytes / preview_count)))
+        records = (
+            int(known_records)
+            if known_records
+            else _estimate_text_records(source, size, sampled, preview_bytes, preview_count)
+        )
         requested_batch = resolved.values["batch_size"]
         batch = plan_batch(
             records=records,
@@ -426,6 +458,21 @@ class AutoTrainer:
             )
         if data_mode == "stream":
             warnings.append("Dataset will use the external streaming path; the source file must remain available")
+        data_health = analyze_inspection(
+            inspection,
+            target=str(target) if target is not None else None,
+            records_estimate=records,
+            feature_count=features,
+            seed=int(resolved.values["seed"]),
+        )
+        data_contract = dict(data_health["contract"])
+        split_policy = dict(data_contract["split_policy"])
+        chunk_policy = dict(data_contract["chunk_policy"])
+        warnings.extend(str(item) for item in data_health["warnings"])
+        if split_policy["strategy"] == "context":
+            warnings.append(
+                "A context-like column was detected; group-exclusive splitting is not implemented in this alpha."
+            )
         return TrainingPlan(
             dataset=str(source),
             target=str(target) if target is not None else None,
@@ -460,7 +507,10 @@ class AutoTrainer:
             data_mode=data_mode,
             config_path=str(resolved.config_path) if resolved.config_path else None,
             sources=resolved.sources,
-            warnings=tuple(warnings),
+            data_contract=data_contract,
+            split_policy=split_policy,
+            chunk_policy=chunk_policy,
+            warnings=tuple(dict.fromkeys(warnings)),
         )
 
     def train(
@@ -481,6 +531,9 @@ class AutoTrainer:
         backend = self._select_backend(
             plan.backend, task, execution_policy(plan.profile, self.workspace.hardware)
         )
+        imported_contract = imported.manifest.get("data_contract")
+        if not isinstance(imported_contract, dict):
+            imported_contract = plan.data_contract
         plan = replace(
             plan,
             target=imported.target,
@@ -488,6 +541,9 @@ class AutoTrainer:
             backend=backend,
             records_estimate=imported.records,
             features_estimate=imported.features,
+            data_contract=imported_contract,
+            split_policy=dict(imported_contract.get("split_policy") or plan.split_policy),
+            chunk_policy=dict(imported_contract.get("chunk_policy") or plan.chunk_policy),
         )
         run = self.workspace.create_run(
             RunConfig(
@@ -521,6 +577,9 @@ class AutoTrainer:
                 degradation_patience=plan.degradation_patience,
                 early_stopping_patience=plan.early_stopping_patience,
                 target_patience=plan.target_patience,
+                data_contract=plan.data_contract,
+                split_policy=plan.split_policy,
+                chunk_policy=plan.chunk_policy,
             )
         )
         current = run.start()
