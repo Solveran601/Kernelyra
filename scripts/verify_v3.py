@@ -58,7 +58,7 @@ def main() -> int:
         dataset = root / "events.csv"
         report_path = root / "report.json"
         make_csv(dataset)
-        assert cli(root, "version")["version"] == "0.5.0a1"
+        assert cli(root, "version")["version"] == "0.5.0a2"
         assert cli(root, "doctor")["ok"] is True
         cli_plan = cli(
             root,

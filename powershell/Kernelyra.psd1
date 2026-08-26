@@ -1,6 +1,6 @@
 @{
     RootModule = 'Kernelyra.psm1'
-    ModuleVersion = '0.5.0'
+    ModuleVersion = '0.5.1'
     GUID = '3d0c17b9-37f3-4f58-b6a8-20a43f971df3'
     Author = 'Kernelyra contributors'
     CompanyName = 'Kernelyra'

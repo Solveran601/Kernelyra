@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0a2 — 2026-08-26
+
+- Replaced public PC-strength modes with explicit `cpu`/`hybrid` execution,
+  developer-controlled CPU/RAM/GPU/thread limits, and four algorithm packs.
+- Added composable PowerShell commands for execution inspection, chunk plans,
+  direct command invocation, and pipeline-friendly planning/training.
+- Kept binary-classification hot loops inside the C++ AVX2 path and removed
+  redundant cross-entropy logarithms for standard 0/1 labels. The matching
+  CPU benchmark remains reproducible and does not claim a NumPy win.
+
 ## 0.5.0a1 — 2026-08-26
 
 - Added Data Doctor: bounded sample findings, signed dataset contracts,

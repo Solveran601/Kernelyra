@@ -13,7 +13,7 @@
 
 <p align="center"><strong>Native-first, resource-aware training for tabular data.</strong></p>
 
-Kernelyra **0.5.0a1 (V3 alpha)** is a local terminal-first library for
+Kernelyra **0.5.0a2 (V3 alpha)** is a local terminal-first library for
 tabular model training. The same planning path is available through the CLI,
 Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 

@@ -1,6 +1,6 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$Destination = (Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules\Kernelyra\0.5.0')
+    [string]$Destination = (Join-Path $env:USERPROFILE 'Documents\PowerShell\Modules\Kernelyra\0.5.1')
 )
 
 $source = Join-Path $PSScriptRoot '..\powershell'

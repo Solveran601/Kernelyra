@@ -43,7 +43,7 @@ from .reports import build_experiment_report, write_experiment_report
 from .tuning import autotune_execution
 from .workspace import Kernelyra, RunHandle, Workspace
 
-__version__ = "0.5.0a1"
+__version__ = "0.5.0a2"
 
 Dataset = DatasetInfo
 Run = RunInfo
