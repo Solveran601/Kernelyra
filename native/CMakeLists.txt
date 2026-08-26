@@ -25,7 +25,11 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml" --release --target ${KERNELYRA_RUST_TARGET}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/lib.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/adaptive.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/chunks.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/hash.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/split.rs"
   VERBATIM)
 add_custom_target(kernelyra_rust_policy DEPENDS "${KERNELYRA_RUST_LIBRARY}")
 add_library(kernelyra_rust_policy_static STATIC IMPORTED GLOBAL)
@@ -40,7 +44,10 @@ find_program(KERNELYRA_ZIG_EXECUTABLE zig REQUIRED)
 set(KERNELYRA_ZIG_OBJECT "${CMAKE_CURRENT_BINARY_DIR}/memory_zig.obj")
 add_custom_command(
   OUTPUT "${KERNELYRA_ZIG_OBJECT}"
-  COMMAND "${KERNELYRA_ZIG_EXECUTABLE}" build-obj "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
+  COMMAND "${CMAKE_COMMAND}" -E env
+          "ZIG_GLOBAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-global-cache"
+          "ZIG_LOCAL_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/zig-local-cache"
+          "${KERNELYRA_ZIG_EXECUTABLE}" build-obj "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
           -O ReleaseFast -target x86_64-windows-gnu -femit-bin=${KERNELYRA_ZIG_OBJECT}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
   VERBATIM)
@@ -51,14 +58,29 @@ set_target_properties(kernelyra_core PROPERTIES PREFIX "" OUTPUT_NAME "kernelyra
 add_library(kernelyra_c_policy STATIC bindings/c/kernelyra_policy.c)
 target_include_directories(kernelyra_c_policy PUBLIC bindings/c/include include)
 target_link_libraries(kernelyra_c_policy PUBLIC kernelyra_core)
+if(BUILD_TESTING)
+  add_executable(kernelyra_native_contract_tests tools/native_contract_tests.cpp)
+  target_compile_features(kernelyra_native_contract_tests PRIVATE cxx_std_17)
+  target_include_directories(kernelyra_native_contract_tests PRIVATE include bindings/c/include)
+  target_link_libraries(kernelyra_native_contract_tests PRIVATE kernelyra_core kernelyra_c_policy)
+  add_test(NAME kernelyra_native_contract_tests COMMAND kernelyra_native_contract_tests)
+endif()
 if(MSVC)
   target_compile_options(dataset_probe PRIVATE /W4 /O2)
   target_compile_options(kernelyra_core PRIVATE /W4 /O2 /fp:fast)
+  target_compile_options(kernelyra_c_policy PRIVATE /W4 /O2)
+  if(BUILD_TESTING)
+    target_compile_options(kernelyra_native_contract_tests PRIVATE /W4 /O2)
+  endif()
 else()
   target_compile_options(dataset_probe PRIVATE -Wall -Wextra -Wpedantic -O3)
   target_compile_options(kernelyra_core PRIVATE
     -Wall -Wextra -Wpedantic -O3 -mtune=generic -fno-math-errno -fno-trapping-math -ffp-contract=fast -fopenmp)
+  target_compile_options(kernelyra_c_policy PRIVATE -Wall -Wextra -Wpedantic -Werror -O3)
   target_link_options(kernelyra_core PRIVATE -fopenmp)
+  if(BUILD_TESTING)
+    target_compile_options(kernelyra_native_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Werror -O2)
+  endif()
   if(MINGW)
     target_link_options(kernelyra_core PRIVATE -static -static-libgcc -static-libstdc++)
   endif()

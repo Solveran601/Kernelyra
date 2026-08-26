@@ -71,6 +71,10 @@ uint32_t kr_rust_policy_split_for_key(
 size_t kr_rust_policy_next_chunk_size(
     size_t remaining_records, size_t target_records, size_t minimum_records,
     size_t maximum_records, uint64_t sequence, uint64_t seed);
+size_t kr_rust_policy_next_adaptive_chunk_size(
+    size_t remaining_records, size_t target_records, size_t minimum_records,
+    size_t maximum_records, uint64_t sequence, uint64_t seed,
+    uint32_t memory_pressure_percent, uint32_t aggression_percent);
 uint32_t kr_rust_policy_probe_signature(const uint8_t* bytes, size_t length);
 #endif
 }
@@ -1188,6 +1192,29 @@ size_t kr_rust_next_chunk_size(
       remaining_records, target_records, minimum_records, maximum_records, sequence, seed);
 }
 
+size_t kr_rust_next_adaptive_chunk_size(
+    size_t remaining_records, size_t target_records, size_t minimum_records,
+    size_t maximum_records, uint64_t sequence, uint64_t seed,
+    uint32_t memory_pressure_percent, uint32_t aggression_percent) {
+  if (remaining_records == 0U || target_records == 0U || minimum_records == 0U ||
+      maximum_records < minimum_records) return 0U;
+#if KR_HAS_RUST_POLICY
+  if (component_enabled(KR_COMPONENT_RUST_POLICY)) {
+    return kr_rust_policy_next_adaptive_chunk_size(
+        remaining_records, target_records, minimum_records, maximum_records,
+        sequence, seed, memory_pressure_percent, aggression_percent);
+  }
+#endif
+  const size_t pressure = std::min<size_t>(100U, memory_pressure_percent);
+  const size_t aggression = std::min<size_t>(100U, aggression_percent);
+  const size_t pressure_scale = 45U + ((100U - pressure) * 55U) / 100U;
+  const size_t aggression_scale = 100U + (aggression * 35U) / 100U;
+  const size_t scaled = target_records / 100U * pressure_scale / 100U * aggression_scale;
+  const size_t target = std::clamp(scaled, minimum_records, maximum_records);
+  return kernelyra::policy::next_chunk_size(
+      remaining_records, target, minimum_records, maximum_records, sequence, seed);
+}
+
 uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length) {
   if (bytes == nullptr || length == 0U) return 0U;
 #if KR_HAS_RUST_POLICY
@@ -1226,6 +1253,58 @@ void kr_memory_normalize_f32(
       data[index] = (data[index] - means[feature]) / stds[feature];
     }
   }
+}
+
+int kr_preprocess_f32(
+    float* data, size_t rows, size_t features, const float* means, const float* stds,
+    float clip_limit, uint32_t flags, uint64_t* repaired_values) {
+  if (repaired_values != nullptr) *repaired_values = 0U;
+  if (rows == 0U || features == 0U) return 1;
+  if (data == nullptr || rows > std::numeric_limits<size_t>::max() / features) {
+    return fail("preprocess input buffer shape is invalid");
+  }
+  const bool impute = (flags & KR_PREPROCESS_IMPUTE_NONFINITE) != 0U;
+  const bool normalize = (flags & KR_PREPROCESS_NORMALIZE) != 0U;
+  const bool clip = (flags & KR_PREPROCESS_CLIP) != 0U;
+  if ((impute || normalize) && means == nullptr) return fail("preprocess means are required");
+  if (normalize && stds == nullptr) return fail("preprocess standard deviations are required");
+  if (clip && (!std::isfinite(clip_limit) || clip_limit <= 0.0F)) {
+    return fail("preprocess clip limit must be positive and finite");
+  }
+  std::atomic<bool> unrecoverable{false};
+  uint64_t repaired = 0U;
+#if defined(_OPENMP)
+#pragma omp parallel for if(rows * features >= 1048576U) schedule(static) reduction(+:repaired)
+#endif
+  for (ptrdiff_t row = 0; row < static_cast<ptrdiff_t>(rows); ++row) {
+    const size_t offset = static_cast<size_t>(row) * features;
+    for (size_t feature = 0; feature < features; ++feature) {
+      float value = data[offset + feature];
+      if (!std::isfinite(value)) {
+        if (!impute) {
+          unrecoverable.store(true, std::memory_order_relaxed);
+          continue;
+        }
+        value = std::isfinite(means[feature]) ? means[feature] : 0.0F;
+        ++repaired;
+      }
+      if (normalize) {
+        const float mean = std::isfinite(means[feature]) ? means[feature] : 0.0F;
+        const float deviation = stds[feature];
+        const float scale = std::isfinite(deviation) && std::abs(deviation) > 1.0e-12F ? deviation : 1.0F;
+        value = (value - mean) / scale;
+      }
+      if (clip) value = std::clamp(value, -clip_limit, clip_limit);
+      if (!std::isfinite(value)) {
+        unrecoverable.store(true, std::memory_order_relaxed);
+        continue;
+      }
+      data[offset + feature] = value;
+    }
+  }
+  if (unrecoverable.load(std::memory_order_relaxed)) return fail("preprocess encountered a non-finite value");
+  if (repaired_values != nullptr) *repaired_values = repaired;
+  return 1;
 }
 
 void kr_memory_copy_f32(float* destination, const float* source, size_t values) {

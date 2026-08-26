@@ -18,14 +18,16 @@ native/
 
 Rust, Fortran and Zig are the active low-level engine components. Rust owns
 deterministic context-safe train/validation/test assignment and bounded,
-variable-size chunk policies; C++ invokes it through the stable C ABI and keeps
-a conservative fallback. For binary
-classification and regression, Fortran executes the entire native train step;
-C++ exposes the ABI, streams batches without loading a whole dataset and keeps
-a conservative fallback for diagnostic comparison. Native multiclass is still
-a partial C++ implementation until its equivalent Fortran kernel is complete.
-Rust, C and C++ consume the ABI directly; Python is only the high-level
-orchestration and optional-framework layer.
+variable-size chunk policies; its experimental adaptive extension accepts
+explicit memory pressure and algorithm aggression, not guessed PC classes.
+C exposes a validated execution-plan contract for CPU/RAM/GPU/thread budgets.
+C++ invokes the policy through the stable C ABI, streams batches without loading
+a whole dataset, and provides fused checked preprocessing (repair, normalize,
+clip) for float32 matrices. The binary classifier keeps its AVX2-capable hot
+loop in C++; Fortran owns regression and shared dense numeric primitives.
+Native multiclass is still a partial C++ implementation until its equivalent
+Fortran kernel is complete. Rust, C and C++ consume the ABI directly; Python is
+only the high-level orchestration and optional-framework layer.
 
 End users install a Windows wheel containing `kernelyra_core.dll` and do not
 need a compiler. Source contributors need MinGW g++, gfortran, Zig and Rust:

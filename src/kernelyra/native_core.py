@@ -350,6 +350,32 @@ class NativeCore:
             ctypes.c_uint64,
         ]
         library.kr_rust_next_chunk_size.restype = ctypes.c_size_t
+        self._adaptive_chunk_available = hasattr(library, "kr_rust_next_adaptive_chunk_size")
+        if self._adaptive_chunk_available:
+            library.kr_rust_next_adaptive_chunk_size.argtypes = [
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            library.kr_rust_next_adaptive_chunk_size.restype = ctypes.c_size_t
+        self._fused_preprocess_available = hasattr(library, "kr_preprocess_f32")
+        if self._fused_preprocess_available:
+            library.kr_preprocess_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_float,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint64),
+            ]
+            library.kr_preprocess_f32.restype = ctypes.c_int
         self._format_probe_available = hasattr(library, "kr_format_probe_signature")
         if self._format_probe_available:
             library.kr_format_probe_signature.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
@@ -533,6 +559,38 @@ class NativeCore:
             )
         )
 
+    def next_adaptive_chunk_size(
+        self,
+        remaining_records: int,
+        target_records: int,
+        minimum_records: int,
+        maximum_records: int,
+        sequence: int,
+        seed: int,
+        *,
+        memory_pressure_percent: int,
+        aggression_percent: int,
+    ) -> int:
+        """Return a Rust-native resource-aware chunk size from explicit signals.
+
+        This is optional to keep already released DLLs loadable; callers that
+        need the adaptive policy must build or install a core containing it.
+        """
+        if not self._adaptive_chunk_available:
+            raise NativeCoreError("This native core does not include adaptive chunk scheduling")
+        return int(
+            self.library.kr_rust_next_adaptive_chunk_size(
+                remaining_records,
+                target_records,
+                minimum_records,
+                maximum_records,
+                sequence,
+                seed,
+                memory_pressure_percent,
+                aggression_percent,
+            )
+        )
+
     def probe_signature(self, prefix: bytes) -> int | None:
         """Classify at most a 4 KiB untrusted prefix through the Rust policy core.
 
@@ -564,6 +622,46 @@ class NativeCore:
             array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size, ctypes.c_float(limit)
         )
         return array
+
+    def preprocess_f32(
+        self,
+        values: np.ndarray,
+        means: np.ndarray,
+        stds: np.ndarray,
+        *,
+        clip_limit: float = 8.0,
+    ) -> tuple[np.ndarray, int]:
+        """Repair non-finite entries, normalize and clip through the C++ core.
+
+        The input is never mutated.  The returned count is the number of
+        source values repaired before normalization, which lets Model Guard
+        record data-quality evidence without another Python scan.
+        """
+        if not self._fused_preprocess_available:
+            raise NativeCoreError("This native core does not include fused preprocessing")
+        matrix = np.ascontiguousarray(values, dtype=np.float32)
+        if matrix.ndim != 2:
+            raise NativeCoreError("preprocess values must be a two-dimensional array")
+        output = matrix.copy()
+        mean_array = np.ascontiguousarray(means, dtype=np.float32).reshape(-1)
+        std_array = np.ascontiguousarray(stds, dtype=np.float32).reshape(-1)
+        if mean_array.size != output.shape[1] or std_array.size != output.shape[1]:
+            raise NativeCoreError("preprocess statistics must match the feature count")
+        repaired = ctypes.c_uint64(0)
+        flags = 1 | 2 | 4
+        ok = self.library.kr_preprocess_f32(
+            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            output.shape[0],
+            output.shape[1],
+            mean_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            std_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.c_float(clip_limit),
+            flags,
+            ctypes.byref(repaired),
+        )
+        if not ok:
+            raise self.error()
+        return output, int(repaired.value)
 
     @property
     def component_mask(self) -> int:

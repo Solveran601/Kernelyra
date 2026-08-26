@@ -22,6 +22,11 @@ enum {
   KR_COMPONENT_RUST_POLICY = 4U,
   KR_COMPONENT_ALL = 7U
 };
+enum {
+  KR_PREPROCESS_IMPUTE_NONFINITE = 1U,
+  KR_PREPROCESS_NORMALIZE = 2U,
+  KR_PREPROCESS_CLIP = 4U
+};
 
 typedef struct kr_model_config {
   uint32_t abi_version;
@@ -47,6 +52,15 @@ KR_API void* kr_memory_alloc_aligned(size_t bytes, size_t alignment);
 KR_API void kr_memory_free_aligned(void* pointer);
 KR_API void kr_memory_normalize_f32(
     float* data, size_t rows, size_t features, const float* means, const float* stds);
+KR_API int kr_preprocess_f32(
+    float* data,
+    size_t rows,
+    size_t features,
+    const float* means,
+    const float* stds,
+    float clip_limit,
+    uint32_t flags,
+    uint64_t* repaired_values);
 KR_API void kr_memory_copy_f32(float* destination, const float* source, size_t values);
 KR_API void kr_memory_zero_f32(float* destination, size_t values);
 KR_API uint32_t kr_values_all_finite_f32(const float* values, size_t count);
@@ -62,6 +76,15 @@ KR_API size_t kr_rust_next_chunk_size(
     size_t maximum_records,
     uint64_t sequence,
     uint64_t seed);
+KR_API size_t kr_rust_next_adaptive_chunk_size(
+    size_t remaining_records,
+    size_t target_records,
+    size_t minimum_records,
+    size_t maximum_records,
+    uint64_t sequence,
+    uint64_t seed,
+    uint32_t memory_pressure_percent,
+    uint32_t aggression_percent);
 KR_API uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length);
 KR_API void kr_numeric_gradient_f32(
     const float* x, const float* errors, size_t rows, size_t features, float* gradient);
