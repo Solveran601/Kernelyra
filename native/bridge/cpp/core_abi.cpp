@@ -626,6 +626,17 @@ float sigmoid(float value) {
   return 1.0F / (1.0F + std::exp(-value));
 }
 
+double binary_cross_entropy(float target, float probability) {
+  const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
+  // The public binary datasets carry 0/1 labels.  Avoid calculating the
+  // unused logarithm in that common case, while preserving soft-label
+  // semantics for callers that deliberately provide fractional targets.
+  if (target == 0.0F) return -std::log(1.0F - bounded);
+  if (target == 1.0F) return -std::log(bounded);
+  return -static_cast<double>(target) * std::log(bounded) -
+         static_cast<double>(1.0F - target) * std::log(1.0F - bounded);
+}
+
 float dot_scalar(const float* row, const float* weights, size_t features) {
   float sum = 0.0F;
 #if defined(__GNUC__) || defined(__clang__)
@@ -813,9 +824,7 @@ int train_binary_parallel(
       const float* row = x + static_cast<size_t>(row_index) * features;
       const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
       const float error = probability - y[row_index];
-      const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
-      total_loss -= static_cast<double>(y[row_index]) * std::log(bounded) +
-                    static_cast<double>(1.0F - y[row_index]) * std::log(1.0F - bounded);
+      total_loss += binary_cross_entropy(y[row_index], probability);
       bias_gradient += error;
       add_scaled(gradient, row, error, features);
     }
@@ -931,9 +940,7 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
     const float* row = x + row_index * features;
     const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
     const float error = probability - y[row_index];
-    const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
-    total_loss -= static_cast<double>(y[row_index]) * std::log(bounded) +
-                  static_cast<double>(1.0F - y[row_index]) * std::log(1.0F - bounded);
+    total_loss += binary_cross_entropy(y[row_index], probability);
     bias_gradient += error;
     add_scaled(model.gradient.data(), row, error, features);
   }
