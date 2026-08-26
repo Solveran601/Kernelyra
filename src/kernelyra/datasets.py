@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from .data_health import analyze_inspection, inspect_path
 from .errors import DatasetError, DatasetNotFoundError
 from .ingestion.registry import IngestorRegistry
 from .ingestion.router import FormatRouter
@@ -101,6 +102,10 @@ class DatasetManager:
 
     def inspect(self, path: str | Path) -> dict[str, Any]:
         return self.router.inspect(path)
+
+    def doctor(self, path: str | Path, target: str | None = None) -> dict[str, Any]:
+        """Return bounded preflight evidence without importing the dataset."""
+        return inspect_path(path, self.router, target=target)
 
     def import_file(
         self,
@@ -205,6 +210,12 @@ class DatasetManager:
             ingestor_name=f"stream-{spec['reader_engine']}",
             ingestor_version="1",
         )
+        health = analyze_inspection(
+            self.router.inspect(source),
+            target=str(spec["target"]),
+            records_estimate=int(spec["records"]),
+            feature_count=int(spec["features"]),
+        )
         info = DatasetInfo(
             id=dataset_id,
             source=source.name,
@@ -218,8 +229,17 @@ class DatasetManager:
             size_bytes=int(spec["size_bytes"]),
             task_types=[str(spec["task_type"])],
             schema=dict(manifest.schema),
-            manifest={**manifest.to_dict(), "streaming": spec},
-            warnings=list(manifest.warnings),
+            manifest={
+                **manifest.to_dict(),
+                "streaming": spec,
+                "data_contract": health["contract"],
+                "data_health": {
+                    "summary": health["summary"],
+                    "findings": health["findings"],
+                    "target_distribution": health["target_distribution"],
+                },
+            },
+            warnings=list(dict.fromkeys([*manifest.warnings, *health["warnings"]])),
             created_at=created_at,
         )
         self.storage.save_dataset(info)
@@ -266,6 +286,12 @@ class DatasetManager:
             ingestor_name=str(ingestor.name),
             ingestor_version=str(getattr(ingestor, "version", "0")),
         )
+        health = analyze_inspection(
+            self.router.inspect(path),
+            target=str(metadata["target"]),
+            records_estimate=int(metadata["records"]),
+            feature_count=int(metadata["features"]),
+        )
         info = DatasetInfo(
             id=dataset_id,
             source=source,
@@ -280,8 +306,16 @@ class DatasetManager:
             size_bytes=path.stat().st_size,
             task_types=list(metadata.get("task_types", [])),
             schema=dict(metadata.get("schema", {})),
-            manifest=manifest.to_dict(),
-            warnings=list(metadata.get("warnings", [])),
+            manifest={
+                **manifest.to_dict(),
+                "data_contract": health["contract"],
+                "data_health": {
+                    "summary": health["summary"],
+                    "findings": health["findings"],
+                    "target_distribution": health["target_distribution"],
+                },
+            },
+            warnings=list(dict.fromkeys([*metadata.get("warnings", []), *health["warnings"]])),
             created_at=created_at,
         )
         self.storage.save_dataset(info)

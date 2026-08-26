@@ -101,6 +101,7 @@ class SQLiteStorage:
             "evaluation_interval": None, "min_improvement": 0.0005,
             "degradation_margin": 0.03, "degradation_patience": 3,
             "early_stopping_patience": 18, "target_patience": 3,
+            "data_contract": {}, "split_policy": {}, "chunk_policy": {},
         }
         merged = {**defaults, **raw}
         merged.setdefault("target_score", merged.pop("target_metric", .92))

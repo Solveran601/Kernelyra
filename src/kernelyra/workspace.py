@@ -135,7 +135,24 @@ class RunManager:
             raise ConfigurationError("early_stopping_patience must be between 1 and 10000")
         if not 1 <= config.target_patience <= 100:
             raise ConfigurationError("target_patience must be between 1 and 100")
-        run = RunInfo.new(name=config.name[:80], dataset=config.dataset, backend=config.backend, effective_backend=None, objective=config.objective, architecture=architecture, model_format=model_format, mode=config.mode, profile=profile, priority=config.priority, target_score=target_score, batch_mode=config.batch_mode, batch_size=batch.applied, batch_min=batch.safe_min, batch_max=batch.safe_max, batch_risk=batch.risk, batch_reason=batch.reason, batch_warnings=batch.warnings, max_steps=max(1, min(10_000_000, config.max_steps)), cpu=max(10, min(100, int(config.cpu if config.cpu is not None else preset["cpu"]))), ram=ram, gpu=max(0, min(100, int(config.gpu if config.gpu is not None else (preset["gpu"] if self.workspace.hardware["gpu_available"] else 0)))), base_run_id=config.base_run_id, model_path=config.model_path, seed=config.seed, learning_rate=config.learning_rate, weight_decay=max(0.0, float(config.weight_decay)), hidden_layers=tuple(config.hidden_layers), precision=config.precision, data_workers=max(0, min(64, int(config.data_workers))), prefetch=max(0, min(32, int(config.prefetch))), evaluation_interval=config.evaluation_interval, min_improvement=config.min_improvement, degradation_margin=degradation_margin, degradation_patience=config.degradation_patience, early_stopping_patience=config.early_stopping_patience, target_patience=config.target_patience)
+        run = RunInfo.new(
+            name=config.name[:80], dataset=config.dataset, backend=config.backend, effective_backend=None,
+            objective=config.objective, architecture=architecture, model_format=model_format, mode=config.mode,
+            profile=profile, priority=config.priority, target_score=target_score, batch_mode=config.batch_mode,
+            batch_size=batch.applied, batch_min=batch.safe_min, batch_max=batch.safe_max, batch_risk=batch.risk,
+            batch_reason=batch.reason, batch_warnings=batch.warnings, max_steps=max(1, min(10_000_000, config.max_steps)),
+            cpu=max(10, min(100, int(config.cpu if config.cpu is not None else preset["cpu"]))), ram=ram,
+            gpu=max(0, min(100, int(config.gpu if config.gpu is not None else (preset["gpu"] if self.workspace.hardware["gpu_available"] else 0)))),
+            base_run_id=config.base_run_id, model_path=config.model_path, seed=config.seed,
+            learning_rate=config.learning_rate, weight_decay=max(0.0, float(config.weight_decay)),
+            hidden_layers=tuple(config.hidden_layers), precision=config.precision,
+            data_workers=max(0, min(64, int(config.data_workers))), prefetch=max(0, min(32, int(config.prefetch))),
+            evaluation_interval=config.evaluation_interval, min_improvement=config.min_improvement,
+            degradation_margin=degradation_margin, degradation_patience=config.degradation_patience,
+            early_stopping_patience=config.early_stopping_patience, target_patience=config.target_patience,
+            data_contract=dict(config.data_contract), split_policy=dict(config.split_policy),
+            chunk_policy=dict(config.chunk_policy),
+        )
         self.workspace.storage.save_run(run)
         self.workspace.storage.log_action("sdk", "run.create", {"run_id": run.id, "dataset": run.dataset, "backend": run.backend})
         return RunHandle(self.workspace, run.id)

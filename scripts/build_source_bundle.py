@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ ROOT_FILES = (
     "MANIFEST.in",
     "pyproject.toml",
     "README.md",
+    "README.ru.md",
     "requirements.txt",
     "SECURITY.md",
     "setup.py",
@@ -32,13 +34,30 @@ ROOT_FILES = (
 )
 SOURCE_DIRS = (
     ".github",
+    "assets",
     "constraints",
     "examples",
     "native",
+    "powershell",
+    "reports",
     "scripts",
     "sdks",
     "src",
 )
+
+
+def verify_readme_links(root: Path) -> None:
+    """Reject source bundles whose public README links point at absent files."""
+    pattern = re.compile(r"!?\[[^\]]*\]\(([^)#]+)(?:#[^)]+)?\)")
+    missing: list[str] = []
+    for name in ("README.md", "README.ru.md"):
+        for target in pattern.findall((root / name).read_text(encoding="utf-8")):
+            if "://" in target or target.startswith("mailto:"):
+                continue
+            if not (root / target).is_file():
+                missing.append(f"{name} -> {target}")
+    if missing:
+        raise SystemExit("Broken relative README link(s):\n" + "\n".join(missing))
 
 
 def source_files() -> list[Path]:
@@ -109,6 +128,7 @@ def main() -> int:
             extract_root = Path(temporary)
             archive.extractall(extract_root)
             unpacked = extract_root / bundle_root
+            verify_readme_links(unpacked)
             result = subprocess.run(
                 [sys.executable, "-B", str(unpacked / "scripts" / "check_clean_source.py")],
                 cwd=unpacked,

@@ -66,7 +66,7 @@ def find_forbidden(
 
 def find_personal_paths(root: Path, *, ignore_top_level: Collection[str] = ()) -> list[str]:
     ignored_roots = {".git", ".venv", "dist", "build", *ignore_top_level}
-    text_suffixes = {".bat", ".cfg", ".ini", ".md", ".ps1", ".py", ".toml", ".txt", ".yml", ".yaml"}
+    text_suffixes = {".bat", ".cfg", ".ini", ".md", ".ps1", ".psd1", ".psm1", ".py", ".toml", ".txt", ".yml", ".yaml"}
     found: list[str] = []
     for path in root.rglob("*"):
         relative = path.relative_to(root).as_posix()

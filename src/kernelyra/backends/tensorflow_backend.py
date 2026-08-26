@@ -11,6 +11,7 @@ from ..metrics import binary_metrics, multiclass_metrics, regression_metrics
 from ..models import TaskType
 from ..streaming import StreamingTabularSource
 from .base import BackendConfig, EvaluationResult, StepResult, TrainingSession
+from .splitter import split_arrays
 
 
 def _tensorflow() -> Any:
@@ -86,16 +87,15 @@ class TensorFlowBackend:
             if config.x is None or config.y is None:
                 raise ValueError("TensorFlow backend requires arrays or a streaming dataset spec")
             x, y = config.x.astype(np.float32), config.y
-            order = rng.permutation(len(x))
-            x, y = x[order], y[order]
-            validation_size = max(16, int(round(len(x) * config.validation_fraction)))
-            test_size = max(1, int(round(len(x) * config.test_fraction)))
-            train_end = len(x) - validation_size - test_size
-            if train_end < 8:
-                raise ValueError("Недостаточно строк после deterministic train/validation/test split")
-            train_x, validation_x = x[:train_end], x[train_end : train_end + validation_size]
-            train_y, validation_y = y[:train_end], y[train_end : train_end + validation_size]
-            test_x, test_y = x[train_end + validation_size :], y[train_end + validation_size :]
+            train_x, train_y, validation_x, validation_y, test_x, test_y = split_arrays(
+                x,
+                y,
+                task_type=config.task_type,
+                seed=config.seed,
+                validation_fraction=config.validation_fraction,
+                test_fraction=config.test_fraction,
+                strategy=config.split_strategy,
+            )
             all_y = y
         test_size = len(test_y)
         widths = list(config.hidden_layers) if config.hidden_layers else {
@@ -165,6 +165,7 @@ class TensorFlowBackend:
             metadata={
                 "task_type": config.task_type,
                 "split_seed": config.seed,
+                "split_strategy": config.split_strategy,
                 "test_rows": test_size,
                 "backend_version": self.version,
                 "gpu_devices": len(gpus),

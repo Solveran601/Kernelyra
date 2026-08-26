@@ -15,6 +15,7 @@ from .backends import WORKER_PROTOCOL_VERSION, BackendConfig, BackendWorker, Pro
 from .checkpoints import CheckpointManager
 from .errors import ConfigurationError, RunError, RunStateError
 from .hardware import PROFILE_PRESETS, recommend_profile
+from .model_guard import assess_trend
 from .models import RunInfo
 from .quality import QualityGate
 from .storage import SQLiteStorage
@@ -372,6 +373,8 @@ class TrainingRuntime:
             "seed": run.seed,
             "features": dataset.features,
             "streaming": bool(dataset_spec),
+            "data_contract_signature": run.data_contract.get("signature"),
+            "split_strategy": run.split_policy.get("execution_strategy", run.split_policy.get("strategy", "random")),
         }
         config_hash = hashlib.sha256(
             json.dumps(config_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -420,6 +423,7 @@ class TrainingRuntime:
             precision=run.precision,
             data_workers=run.data_workers,
             prefetch=run.prefetch,
+            split_strategy=str(run.split_policy.get("execution_strategy", run.split_policy.get("strategy", "random"))),
         )
         worker = ProcessBackendWorker(
             backend_name,
@@ -442,6 +446,9 @@ class TrainingRuntime:
             "architecture": run.architecture,
             "model_format": run.model_format,
             "execution_tuning": tuning,
+            "data_contract": run.data_contract,
+            "split_policy": run.split_policy,
+            "chunk_policy": run.chunk_policy,
         }
         if run.model_path:
             self._capture_finetune_baseline(run, worker, checkpoint, checkpoint_metadata)
@@ -577,7 +584,7 @@ class TrainingRuntime:
             baseline_score = baseline.get("score") if isinstance(baseline, dict) else None
             gate = QualityGate(
                 degradation_margin=run.degradation_margin,
-                baseline_score=baseline_score if isinstance(baseline_score, (int, float)) else None,
+                baseline_score=baseline_score if isinstance(baseline_score, int | float) else None,
             )
             quality_gate = gate.inspect(
                 score=score,
@@ -609,6 +616,13 @@ class TrainingRuntime:
                 )
                 self._save_worker_progress(run)
                 raise FloatingPointError("Quality Gate rejected non-finite training metrics")
+            guard_v2 = assess_trend(
+                [*recent_scores, score],
+                best_score=score if run.eval_count == 1 else run.best_score,
+                degradation_margin=run.degradation_margin,
+                degradation_patience=run.degradation_patience,
+                baseline_score=baseline_score if isinstance(baseline_score, int | float) else None,
+            )
             run.metrics = {
                 "step": run.step,
                 "train": {"loss": run.loss},
@@ -685,6 +699,7 @@ class TrainingRuntime:
                     "target_patience": run.target_patience,
                 },
                 "quality_gate": quality_gate,
+                "guard_v2": guard_v2,
             }
             target_hits = target_hits + 1 if score >= run.target_score else 0
             train_records = int(getattr(worker, "train_records", 0) or 0)
@@ -692,7 +707,7 @@ class TrainingRuntime:
                 train_records = len(worker.session.train_x)
             note = self._adapt_batch(run, recent_scores, train_records)
             run.message = note or f"Validation #{run.eval_count}: score {score:.3f}; batch {run.batch_size}"
-            if degradation_streak >= run.degradation_patience:
+            if degradation_streak >= run.degradation_patience or guard_v2["restore_recommended"]:
                 run.message = "Model Guard: качество ухудшается; восстановлен лучший checkpoint"
                 run.termination_reason = "model_degradation"
                 rejected_checkpoint = dict(run.checkpoint.get("last") or {})

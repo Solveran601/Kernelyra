@@ -15,7 +15,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.4.0a1"
+VERSION = "0.5.0a1"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4
@@ -121,10 +121,10 @@ def _parser() -> argparse.ArgumentParser:
 
     dataset = commands.add_parser("dataset")
     dataset_commands = dataset.add_subparsers(dest="dataset_command", required=True)
-    for name in ("inspect", "import", "add"):
+    for name in ("inspect", "doctor", "import", "add"):
         item = dataset_commands.add_parser(name)
         item.add_argument("path")
-        if name in {"import", "add"}:
+        if name in {"doctor", "import", "add"}:
             item.add_argument("--target")
     dataset_list = dataset_commands.add_parser("list")
     dataset_list.add_argument("--limit", type=int, default=100)
@@ -166,6 +166,9 @@ def _parser() -> argparse.ArgumentParser:
     inference = commands.add_parser("infer", help="Run checkpoint-backed held-out prediction requests")
     inference.add_argument("run_id")
     inference.add_argument("--requests", type=int, default=200)
+    report = commands.add_parser("report", help="Write a portable experiment report without starting a daemon")
+    report.add_argument("run_id")
+    report.add_argument("--output", help="Destination (.json by default, or .html)")
 
     native = commands.add_parser("native", help="Inspect or build the dependency-free native training core")
     native_commands = native.add_subparsers(dest="native_command", required=True)
@@ -432,6 +435,27 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             seed=args.seed,
         )
         return True, planner.summary(args.records)
+    if args.command == "dataset" and args.dataset_command == "doctor":
+        from .workspace import Workspace
+
+        with Workspace.open(root) as workspace:
+            return True, workspace.datasets.doctor(args.path, args.target)
+    if args.command == "report":
+        from .reports import build_experiment_report, write_experiment_report
+        from .workspace import Workspace
+
+        with Workspace.open(root) as workspace:
+            report = build_experiment_report(workspace, args.run_id)
+            output = Path(args.output).expanduser() if args.output else (
+                root / ".kernelyra" / "reports" / f"{args.run_id}.json"
+            )
+            written = write_experiment_report(report, output)
+            return True, {
+                "contract": report["contract"],
+                "run_id": args.run_id,
+                "output": str(written),
+                "health": report["health"],
+            }
     if args.command == "native":
         from .native_core import build_native_core, native_core_status
 

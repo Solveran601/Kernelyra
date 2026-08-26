@@ -158,6 +158,9 @@ class RunConfig:
     degradation_patience: int = 3
     early_stopping_patience: int = 18
     target_patience: int = 3
+    data_contract: dict[str, Any] = field(default_factory=dict)
+    split_policy: dict[str, Any] = field(default_factory=dict)
+    chunk_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -200,6 +203,9 @@ class RunInfo:
     degradation_patience: int = 3
     early_stopping_patience: int = 18
     target_patience: int = 3
+    data_contract: dict[str, Any] = field(default_factory=dict)
+    split_policy: dict[str, Any] = field(default_factory=dict)
+    chunk_policy: dict[str, Any] = field(default_factory=dict)
     status: str = "draft"
     step: int = 0
     best_score: float = 0.0
