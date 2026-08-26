@@ -75,6 +75,9 @@ size_t kr_rust_policy_next_adaptive_chunk_size(
     size_t remaining_records, size_t target_records, size_t minimum_records,
     size_t maximum_records, uint64_t sequence, uint64_t seed,
     uint32_t memory_pressure_percent, uint32_t aggression_percent);
+size_t kr_rust_policy_plan_text_chunks(
+    const uint8_t* text, size_t length, size_t minimum_bytes, size_t target_bytes,
+    size_t maximum_bytes, size_t overlap_bytes, kr_text_chunk* output, size_t capacity);
 uint32_t kr_rust_policy_probe_signature(const uint8_t* bytes, size_t length);
 #endif
 }
@@ -1213,6 +1216,35 @@ size_t kr_rust_next_adaptive_chunk_size(
   const size_t target = std::clamp(scaled, minimum_records, maximum_records);
   return kernelyra::policy::next_chunk_size(
       remaining_records, target, minimum_records, maximum_records, sequence, seed);
+}
+
+size_t kr_text_plan_chunks(
+    const uint8_t* text, size_t length, size_t minimum_bytes, size_t target_bytes,
+    size_t maximum_bytes, size_t overlap_bytes, kr_text_chunk* output, size_t capacity) {
+  if (text == nullptr && length != 0U) {
+    last_error = "text chunk planner received a null text pointer";
+    return KR_TEXT_CHUNK_PLAN_INVALID;
+  }
+#if !KR_HAS_RUST_POLICY
+  (void)minimum_bytes;
+  (void)target_bytes;
+  (void)maximum_bytes;
+  (void)overlap_bytes;
+  (void)output;
+  (void)capacity;
+#endif
+#if KR_HAS_RUST_POLICY
+  if (component_enabled(KR_COMPONENT_RUST_POLICY)) {
+    const size_t planned = kr_rust_policy_plan_text_chunks(
+        text, length, minimum_bytes, target_bytes, maximum_bytes, overlap_bytes, output, capacity);
+    if (planned == KR_TEXT_CHUNK_PLAN_INVALID) last_error = "text chunk planner rejected its UTF-8 input or bounds";
+    return planned;
+  }
+#endif
+  // Text boundary semantics belong to Rust. A byte-only C++ fallback would
+  // risk breaking UTF-8 or silently changing loss/context boundaries.
+  last_error = "text chunk planning requires the Rust policy component";
+  return KR_TEXT_CHUNK_PLAN_INVALID;
 }
 
 uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length) {

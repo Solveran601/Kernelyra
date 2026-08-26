@@ -41,6 +41,14 @@ typedef struct kr_model_config {
   float target_std;
 } kr_model_config;
 
+typedef struct kr_text_chunk {
+  size_t context_start;
+  size_t content_start;
+  size_t end;
+} kr_text_chunk;
+
+#define KR_TEXT_CHUNK_PLAN_INVALID ((size_t)-1)
+
 KR_API const char* kr_core_version(void);
 KR_API const char* kr_core_features(void);
 KR_API const char* kr_core_components(void);
@@ -85,6 +93,16 @@ KR_API size_t kr_rust_next_adaptive_chunk_size(
     uint64_t seed,
     uint32_t memory_pressure_percent,
     uint32_t aggression_percent);
+/* Plan UTF-8-safe context spans. Call with output=NULL to obtain span count. */
+KR_API size_t kr_text_plan_chunks(
+    const uint8_t* text,
+    size_t length,
+    size_t minimum_bytes,
+    size_t target_bytes,
+    size_t maximum_bytes,
+    size_t overlap_bytes,
+    kr_text_chunk* output,
+    size_t capacity);
 KR_API uint32_t kr_format_probe_signature(const uint8_t* bytes, size_t length);
 KR_API void kr_numeric_gradient_f32(
     const float* x, const float* errors, size_t rows, size_t features, float* gradient);

@@ -45,6 +45,14 @@ class _ModelConfig(ctypes.Structure):
     ]
 
 
+class _TextChunk(ctypes.Structure):
+    _fields_ = [
+        ("context_start", ctypes.c_size_t),
+        ("content_start", ctypes.c_size_t),
+        ("end", ctypes.c_size_t),
+    ]
+
+
 def _library_names() -> tuple[str, ...]:
     system = platform.system().lower()
     if system == "windows":
@@ -126,18 +134,34 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             )
         component_sources = {
             "zig": root / "native" / "core" / "zig" / "memory_kernels.zig",
-            "fortran": root / "native" / "core" / "fortran" / "training_kernels.f90",
         }
+        fortran_sources = [
+            root / "native" / "core" / "fortran" / name
+            for name in (
+                "numeric_constants.f90",
+                "numeric_precision.f90",
+                "loss_binary.f90",
+                "loss_regression.f90",
+                "gradient_layout.f90",
+                "vector_kernels.f90",
+                "gradient_kernels.f90",
+                "training_state.f90",
+                "training_kernels.f90",
+            )
+        ]
         rust_manifest = root / "native" / "core" / "rust" / "Cargo.toml"
         with tempfile.TemporaryDirectory(prefix="kernelyra-native-build-") as temporary:
             build = Path(temporary)
             objects: list[Path] = []
             defines: list[str] = []
 
-            def compile_component(arguments: list[str], expected: Path, name: str) -> None:
+            def compile_component(
+                arguments: list[str], expected: Path, name: str, environment: dict[str, str] | None = None
+            ) -> None:
                 result = subprocess.run(  # nosec B603
                     arguments,
                     cwd=root,
+                    env=environment,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -152,6 +176,9 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
 
             if component_sources["zig"].is_file():
                 zig_object = build / "memory_zig.obj"
+                zig_environment = os.environ.copy()
+                zig_environment["ZIG_GLOBAL_CACHE_DIR"] = str(build / "zig-global-cache")
+                zig_environment["ZIG_LOCAL_CACHE_DIR"] = str(build / "zig-local-cache")
                 compile_component(
                     [
                         zig,
@@ -165,26 +192,32 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                     ],
                     zig_object,
                     "Zig memory",
+                    zig_environment,
                 )
                 defines.append("-DKR_HAS_ZIG_MEMORY=1")
-            if component_sources["fortran"].is_file():
-                fortran_object = build / "numeric_fortran.o"
-                compile_component(
-                    [
-                        gfortran,
-                        "-O3",
-                        "-ffast-math",
-                        "-funroll-loops",
-                        "-fno-protect-parens",
-                        "-fopenmp",
-                        "-c",
-                        str(component_sources["fortran"]),
-                        "-o",
-                        str(fortran_object),
-                    ],
-                    fortran_object,
-                    "Fortran numeric",
-                )
+            if all(source.is_file() for source in fortran_sources):
+                for index, fortran_source in enumerate(fortran_sources):
+                    fortran_object = build / f"numeric_fortran_{index}.o"
+                    compile_component(
+                        [
+                            gfortran,
+                            "-O3",
+                            "-ffast-math",
+                            "-funroll-loops",
+                            "-fno-protect-parens",
+                            "-fopenmp",
+                            "-J",
+                            str(build),
+                            "-I",
+                            str(build),
+                            "-c",
+                            str(fortran_source),
+                            "-o",
+                            str(fortran_object),
+                        ],
+                        fortran_object,
+                        f"Fortran numeric ({fortran_source.stem})",
+                    )
                 defines.append("-DKR_HAS_FORTRAN_NUMERIC=1")
             if rust_manifest.is_file():
                 rust_target = "x86_64-pc-windows-gnu"
@@ -363,6 +396,19 @@ class NativeCore:
                 ctypes.c_uint32,
             ]
             library.kr_rust_next_adaptive_chunk_size.restype = ctypes.c_size_t
+        self._text_chunk_available = hasattr(library, "kr_text_plan_chunks")
+        if self._text_chunk_available:
+            library.kr_text_plan_chunks.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(_TextChunk),
+                ctypes.c_size_t,
+            ]
+            library.kr_text_plan_chunks.restype = ctypes.c_size_t
         self._fused_preprocess_available = hasattr(library, "kr_preprocess_f32")
         if self._fused_preprocess_available:
             library.kr_preprocess_f32.argtypes = [
@@ -590,6 +636,85 @@ class NativeCore:
                 aggression_percent,
             )
         )
+
+    def plan_text_chunks(
+        self,
+        text: str,
+        *,
+        minimum_bytes: int = 768,
+        target_bytes: int = 1_536,
+        maximum_bytes: int = 2_048,
+        overlap_bytes: int = 256,
+    ) -> list[dict[str, Any]]:
+        """Plan UTF-8-safe text spans with explicit reusable context prefixes.
+
+        Each returned item has a ``content`` range that partitions the input
+        exactly once, plus a ``context`` prefix. A future language-model
+        trainer must mask this prefix from loss; v5 does not yet ship one.
+        """
+        if not self._text_chunk_available:
+            raise NativeCoreError("This native core does not include text chunk planning")
+        if not isinstance(text, str):
+            raise NativeCoreError("text chunk planning requires a string")
+        payload = text.encode("utf-8")
+        buffer = ctypes.create_string_buffer(payload) if payload else None
+        pointer = ctypes.cast(buffer, ctypes.c_void_p) if buffer is not None else None
+        required = int(
+            self.library.kr_text_plan_chunks(
+                pointer,
+                len(payload),
+                minimum_bytes,
+                target_bytes,
+                maximum_bytes,
+                overlap_bytes,
+                None,
+                0,
+            )
+        )
+        if required == ctypes.c_size_t(-1).value:
+            raise self.error()
+        if required == 0:
+            return []
+        spans = (_TextChunk * required)()
+        written = int(
+            self.library.kr_text_plan_chunks(
+                pointer,
+                len(payload),
+                minimum_bytes,
+                target_bytes,
+                maximum_bytes,
+                overlap_bytes,
+                spans,
+                required,
+            )
+        )
+        if written != required:
+            raise NativeCoreError("Native text chunk planner returned an inconsistent span count")
+        result: list[dict[str, Any]] = []
+        expected_start = 0
+        for span in spans:
+            context_start, content_start, end = int(span.context_start), int(span.content_start), int(span.end)
+            if not (0 <= context_start <= content_start == expected_start < end <= len(payload)):
+                raise NativeCoreError("Native text chunk planner returned invalid boundaries")
+            try:
+                context = payload[context_start:end].decode("utf-8")
+                content = payload[content_start:end].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise NativeCoreError("Native text chunk planner split a UTF-8 sequence") from error
+            result.append(
+                {
+                    "context_start_byte": context_start,
+                    "content_start_byte": content_start,
+                    "end_byte": end,
+                    "context_prefix_bytes": content_start - context_start,
+                    "context": context,
+                    "content": content,
+                }
+            )
+            expected_start = end
+        if expected_start != len(payload):
+            raise NativeCoreError("Native text chunk planner did not cover the complete input")
+        return result
 
     def probe_signature(self, prefix: bytes) -> int | None:
         """Classify at most a 4 KiB untrusted prefix through the Rust policy core.

@@ -12,6 +12,7 @@ mod chunks;
 mod hash;
 mod signature;
 mod split;
+mod text_chunks;
 
 #[unsafe(export_name = "kr_rust_policy_mix_u64")]
 pub extern "C" fn kr_rust_mix_u64(value: u64) -> u64 {

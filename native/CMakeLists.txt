@@ -7,6 +7,14 @@ target_compile_features(dataset_probe PRIVATE cxx_std_17)
 set(KERNELYRA_NATIVE_SOURCES
   bridge/cpp/core_abi.cpp
   bridge/cpp/context_policy.cpp
+  core/fortran/numeric_constants.f90
+  core/fortran/numeric_precision.f90
+  core/fortran/loss_binary.f90
+  core/fortran/loss_regression.f90
+  core/fortran/gradient_layout.f90
+  core/fortran/vector_kernels.f90
+  core/fortran/gradient_kernels.f90
+  core/fortran/training_state.f90
   core/fortran/training_kernels.f90
 )
 add_library(kernelyra_core SHARED ${KERNELYRA_NATIVE_SOURCES})
@@ -30,6 +38,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/hash.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/split.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/text_chunks.rs"
   VERBATIM)
 add_custom_target(kernelyra_rust_policy DEPENDS "${KERNELYRA_RUST_LIBRARY}")
 add_library(kernelyra_rust_policy_static STATIC IMPORTED GLOBAL)
@@ -50,6 +59,14 @@ add_custom_command(
           "${KERNELYRA_ZIG_EXECUTABLE}" build-obj "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
           -O ReleaseFast -target x86_64-windows-gnu -femit-bin=${KERNELYRA_ZIG_OBJECT}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_alignment.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_allocator.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_clip.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_finite.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_transfer.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_guard.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_normalize.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_shape.zig"
   VERBATIM)
 set_source_files_properties("${KERNELYRA_ZIG_OBJECT}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 target_sources(kernelyra_core PRIVATE "${KERNELYRA_ZIG_OBJECT}")

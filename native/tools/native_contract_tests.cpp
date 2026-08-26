@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -35,6 +37,30 @@ int main() {
       !expect(values[4] == 3.0F && values[5] == -3.0F, "clipping is fused")) {
     return 1;
   }
+  const std::string text = "First sentence is complete. Second sentence keeps the meaning.\n\nThird paragraph ends the example.";
+  const size_t chunk_count = kr_text_plan_chunks(
+      reinterpret_cast<const uint8_t*>(text.data()), text.size(), 24U, 42U, 56U, 12U, nullptr, 0U);
+  if (!expect(chunk_count != KR_TEXT_CHUNK_PLAN_INVALID && chunk_count >= 2U,
+              "text planner creates multiple chunks")) {
+    return 1;
+  }
+  std::vector<kr_text_chunk> text_chunks(chunk_count);
+  if (!expect(kr_text_plan_chunks(
+                  reinterpret_cast<const uint8_t*>(text.data()), text.size(), 24U, 42U, 56U, 12U,
+                  text_chunks.data(), text_chunks.size()) == chunk_count,
+              "text planner writes the announced span count")) {
+    return 1;
+  }
+  size_t covered = 0U;
+  for (const kr_text_chunk& chunk : text_chunks) {
+    if (!expect(chunk.context_start <= chunk.content_start && chunk.content_start == covered &&
+                    chunk.end > chunk.content_start && chunk.end <= text.size(),
+                "text chunks retain contiguous content and bounded context")) {
+      return 1;
+    }
+    covered = chunk.end;
+  }
+  if (!expect(covered == text.size(), "text chunks cover the complete source")) return 1;
   float unrepaired[] = {std::numeric_limits<float>::quiet_NaN()};
   if (!expect(kr_preprocess_f32(
                   unrepaired, 1U, 1U, means, stds, 3.0F,
