@@ -919,15 +919,11 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
     return train_binary_parallel(model, x, y, rows, loss);
   }
 #endif
-#if KR_HAS_FORTRAN_NUMERIC
-  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
-    model.errors.resize(rows);
-    kr_fortran_binary_train_f32(
-        x, y, rows, features, model.weights.data(), model.bias.data(), model.config.learning_rate,
-        model.config.weight_decay, model.errors.data(), model.gradient.data(), loss);
-    return std::isfinite(*loss) ? 1 : fail("Fortran binary loss became non-finite");
-  }
-#endif
+  // The binary path keeps prediction and gradient accumulation in this AVX2
+  // translation unit.  Calling the Fortran row kernel once per example adds a
+  // function boundary to every dot product and is measurably slower on small
+  // and medium tabular matrices.  Fortran remains active for regression and
+  // numeric primitives; this branch is selected for locality, not semantics.
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
