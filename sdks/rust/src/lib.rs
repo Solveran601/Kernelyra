@@ -17,6 +17,42 @@ pub struct Config {
     values: Map<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionTarget {
+    Auto,
+    Cpu,
+    Hybrid,
+}
+
+impl ExecutionTarget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Cpu => "cpu",
+            Self::Hybrid => "hybrid",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AlgorithmPack {
+    Careful,
+    Balanced,
+    Throughput,
+    Maximum,
+}
+
+impl AlgorithmPack {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Careful => "careful",
+            Self::Balanced => "balanced",
+            Self::Throughput => "throughput",
+            Self::Maximum => "maximum",
+        }
+    }
+}
+
 impl Config {
     pub fn auto(target: &str) -> Self {
         if target.is_empty() {
@@ -44,6 +80,19 @@ impl Config {
     pub fn model_format(self, value: &str) -> Self {
         self.set("model_format", value)
     }
+    pub fn execution(self, value: ExecutionTarget) -> Self {
+        self.set("execution", value.as_str())
+    }
+    pub fn cpu_only(self) -> Self {
+        self.execution(ExecutionTarget::Cpu)
+    }
+    pub fn hybrid(self) -> Self {
+        self.execution(ExecutionTarget::Hybrid)
+    }
+    pub fn algorithm_pack(self, value: AlgorithmPack) -> Self {
+        self.set("algorithm_pack", value.as_str())
+    }
+    /// Legacy persisted profiles remain readable; use `algorithm_pack` for new code.
     pub fn profile(self, value: &str) -> Self {
         self.set("profile", value)
     }
@@ -64,6 +113,9 @@ impl Config {
         self.values.insert("ram".into(), ram.into());
         self.values.insert("gpu".into(), gpu.into());
         self
+    }
+    pub fn threads(self, value: u64) -> Self {
+        self.set("threads", value)
     }
     pub fn optimizer(mut self, learning_rate: f64, weight_decay: f64) -> Self {
         self.values
@@ -261,7 +313,7 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{AlgorithmPack, Config, ExecutionTarget};
 
     #[test]
     fn auto_without_target_preserves_inference() {
@@ -273,6 +325,18 @@ mod tests {
         let values = Config::default().resources(35, 40, 0).data(1, 0).into_map();
         assert_eq!(values["gpu"], 0);
         assert_eq!(values["prefetch"], 0);
+    }
+
+    #[test]
+    fn typed_execution_and_pack_use_protocol_vocabulary() {
+        let values = Config::default()
+            .execution(ExecutionTarget::Cpu)
+            .algorithm_pack(AlgorithmPack::Throughput)
+            .threads(8)
+            .into_map();
+        assert_eq!(values["execution"], "cpu");
+        assert_eq!(values["algorithm_pack"], "throughput");
+        assert_eq!(values["threads"], 8);
     }
 
     #[test]

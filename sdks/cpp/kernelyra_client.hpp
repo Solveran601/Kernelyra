@@ -14,6 +14,28 @@ namespace kernelyra {
 // Boost.Process, Qt QProcess, Win32 CreateProcess or POSIX pipes.
 using Transport = std::function<std::string(const std::string&)>;
 
+enum class ExecutionTarget { automatic, cpu, hybrid };
+enum class AlgorithmPack { careful, balanced, throughput, maximum };
+
+inline const char* execution_target_name(ExecutionTarget value) {
+  switch (value) {
+    case ExecutionTarget::automatic: return "auto";
+    case ExecutionTarget::cpu: return "cpu";
+    case ExecutionTarget::hybrid: return "hybrid";
+  }
+  return "auto";
+}
+
+inline const char* algorithm_pack_name(AlgorithmPack value) {
+  switch (value) {
+    case AlgorithmPack::careful: return "careful";
+    case AlgorithmPack::balanced: return "balanced";
+    case AlgorithmPack::throughput: return "throughput";
+    case AlgorithmPack::maximum: return "maximum";
+  }
+  return "balanced";
+}
+
 class Config {
   std::vector<std::pair<std::string, std::string>> values_;
   static std::string quote(const std::string& value) {
@@ -41,14 +63,22 @@ public:
   Config& backend(const std::string& value) { return put("backend", quote(value)); }
   Config& architecture(const std::string& value) { return put("architecture", quote(value)); }
   Config& model_format(const std::string& value) { return put("model_format", quote(value)); }
+  Config& execution(const std::string& value) { return put("execution", quote(value)); }
+  Config& execution(ExecutionTarget value) { return execution(execution_target_name(value)); }
+  Config& cpu_only() { return execution(ExecutionTarget::cpu); }
+  Config& hybrid() { return execution(ExecutionTarget::hybrid); }
+  Config& algorithm_pack(const std::string& value) { return put("algorithm_pack", quote(value)); }
+  Config& algorithm_pack(AlgorithmPack value) { return algorithm_pack(algorithm_pack_name(value)); }
+  /* Legacy persisted profiles are accepted for compatibility. Prefer algorithm_pack(). */
   Config& profile(const std::string& value) { return put("profile", quote(value)); }
   Config& goal(double value) { return put("target_metric", std::to_string(value)); }
   Config& steps(unsigned long long value) { return put("max_steps", std::to_string(value)); }
   Config& batch(unsigned value, bool accept_risk = false) {
     put("batch_size", std::to_string(value)); return put("accept_batch_risk", accept_risk ? "true" : "false");
   }
-  Config& resources(unsigned cpu, unsigned ram, unsigned gpu = 0) {
-    put("cpu", std::to_string(cpu)); put("ram", std::to_string(ram)); return put("gpu", std::to_string(gpu));
+  Config& resources(unsigned cpu, unsigned ram, unsigned gpu = 0, unsigned threads = 0) {
+    put("cpu", std::to_string(cpu)); put("ram", std::to_string(ram)); put("gpu", std::to_string(gpu));
+    return threads ? put("threads", std::to_string(threads)) : *this;
   }
   Config& optimizer(double learning_rate, double weight_decay = 0) {
     put("learning_rate", std::to_string(learning_rate)); return put("weight_decay", std::to_string(weight_decay));

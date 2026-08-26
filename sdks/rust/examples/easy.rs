@@ -1,4 +1,4 @@
-use kernelyra_client::{Client, Config};
+use kernelyra_client::{AlgorithmPack, Client, Config};
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
@@ -15,7 +15,16 @@ fn main() -> Result<(), String> {
     let result = engine.fit(
         dataset,
         target,
-        Some(Config::default().backend(backend).goal(0.95).steps(steps)),
+        Some(
+            Config::default()
+                .backend(backend)
+                .cpu_only()
+                .algorithm_pack(AlgorithmPack::Throughput)
+                .resources(90, 80, 0)
+                .threads(8)
+                .goal(0.95)
+                .steps(steps),
+        ),
     )?;
     println!(
         "status={} checkpoint={}",

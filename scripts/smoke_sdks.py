@@ -17,9 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "src"))
 
-from kernelyra import Config, Engine  # noqa: E402
-
-LANGUAGES = ("python", "go", "cpp", "rust", "csharp")
+LANGUAGES = ("python", "c", "go", "cpp", "rust", "csharp")
 
 
 def _dataset(path: Path) -> None:
@@ -51,6 +49,22 @@ def _executable(explicit: str | None) -> str:
 def _command(language: str, root: Path, dataset: Path, executable: str) -> tuple[list[str], Path]:
     workspace = root / language
     common = [str(dataset), "target", str(workspace), executable, "numpy", "2"]
+    if language == "c":
+        binary = root / ("kernelyra-c.exe" if sys.platform == "win32" else "kernelyra-c")
+        compiler = shutil.which("gcc") or "gcc"
+        build = subprocess.run(
+            [
+                compiler, "-std=c11", "-Wall", "-Wextra", "-pedantic", "-Werror",
+                str(ROOT / "sdks" / "c" / "example.c"), "-o", str(binary),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if build.returncode:
+            raise RuntimeError(build.stdout + build.stderr)
+        return [str(binary)], ROOT
     if language == "go":
         return ["go", "run", "./examples/easy", *common], ROOT / "sdks" / "go"
     if language == "rust":
@@ -83,6 +97,8 @@ def _command(language: str, root: Path, dataset: Path, executable: str) -> tuple
 
 
 def _python(root: Path, dataset: Path) -> dict[str, Any]:
+    from kernelyra import Config, Engine
+
     with Engine(root / "python") as engine:
         result = engine.fit(
             dataset,
@@ -111,6 +127,13 @@ def _external(language: str, root: Path, dataset: Path, executable: str, timeout
         env=environment,
     )
     output = (completed.stdout + completed.stderr).strip()
+    if language == "c":
+        return {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "check": "C JSONL request serialization",
+            "output": output[-2_000:],
+        }
     checkpoint = output.rsplit("checkpoint=", 1)[-1].strip().splitlines()[0] if "checkpoint=" in output else ""
     return {
         "ok": completed.returncode == 0 and bool(checkpoint) and Path(checkpoint).is_file(),
@@ -130,10 +153,10 @@ def main() -> int:
     args.work_dir.mkdir(parents=True, exist_ok=True)
     dataset = args.work_dir / "dataset.csv"
     _dataset(dataset)
-    executable = _executable(args.executable)
+    executable = _executable(args.executable) if any(language != "c" for language in args.languages) else ""
     results: dict[str, dict[str, Any]] = {}
     for language in args.languages:
-        tool = {"go": "go", "cpp": "g++", "rust": "cargo", "csharp": "dotnet"}.get(language)
+        tool = {"c": "gcc", "go": "go", "cpp": "g++", "rust": "cargo", "csharp": "dotnet"}.get(language)
         if tool and not shutil.which(tool):
             results[language] = {"ok": False, "error": f"{tool} is not installed"}
             continue

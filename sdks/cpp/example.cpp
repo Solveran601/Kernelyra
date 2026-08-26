@@ -9,7 +9,13 @@ int main(int argc, char** argv) {
   const std::string backend = argc > 5 ? argv[5] : "torch";
   const auto steps = argc > 6 ? std::stoull(argv[6]) : 5000ULL;
   auto engine = kernelyra::open(workspace, executable);
-  auto config = kernelyra::Config::automatic().backend(backend).goal(0.95).steps(steps);
+  auto config = kernelyra::Config::automatic()
+      .backend(backend)
+      .cpu_only()
+      .algorithm_pack(kernelyra::AlgorithmPack::throughput)
+      .resources(90, 80, 0, 8)
+      .goal(0.95)
+      .steps(steps);
   auto result = engine.fit(dataset, target, config);
   std::cout << "status=" << result.status() << " checkpoint=" << result.checkpoint() << '\n';
 }
