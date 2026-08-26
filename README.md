@@ -101,6 +101,9 @@ are saved in [the V3 JSON report](reports/v3-workflow-benchmark-2026-08-25.json)
 A separate CPU-only matched-linear run records the measured Kernelyra, NumPy,
 PyTorch, and JAX results without ranking different algorithms in
 [the framework matrix](reports/v3-framework-cpu-2026-08-25.json).
+The newer [CPU matrix](reports/CPU_BENCHMARK_2026-08-26.md) records Kernelyra
+and ten ML libraries on an independent hold-out split, while keeping tree and
+online learners outside the linear speed comparison.
 
 ## More information
 

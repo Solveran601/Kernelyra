@@ -101,6 +101,9 @@ V3 workflow benchmark измеряет локальную предварител
 Отдельный CPU-only matched-linear запуск сохраняет фактические результаты
 Kernelyra, NumPy, PyTorch и JAX без ранжирования разных алгоритмов в
 [framework matrix](reports/v3-framework-cpu-2026-08-25.json).
+Более новая [CPU-матрица](reports/CPU_BENCHMARK_2026-08-26.md) фиксирует
+Kernelyra и десять ML-библиотек на независимом hold-out наборе, оставляя
+деревья и online-обучение вне линейного сравнения скорости.
 
 ## Дополнительно
 
