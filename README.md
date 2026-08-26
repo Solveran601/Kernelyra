@@ -17,6 +17,37 @@ Kernelyra **0.5.0a1 (V3 alpha)** is a local terminal-first library for
 tabular model training. The same planning path is available through the CLI,
 Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 
+<p align="center">
+  <a href="#capabilities">Capabilities</a> ·
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md">CPU benchmark</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#powershell">PowerShell</a> ·
+  <a href="#limits">Limits</a>
+</p>
+
+## CPU benchmark snapshot
+
+<p align="center">
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md">Read the methodology</a> ·
+  <a href="reports/cpu-framework-matrix-2026-08-26.json">Open raw JSON</a> ·
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md#reproduce">Reproduce</a>
+</p>
+
+| Same float32 full-batch logistic-regression task, CPU-only | Result |
+| --- | --- |
+| Machine and method | Intel Core i5-1235U; one shared CPU thread; 8,192 train + 2,048 held-out rows; median of 3 runs |
+| Quality | Kernelyra, NumPy, PyTorch, TensorFlow, JAX, and Flax/Optax: **96.09% hold-out accuracy** |
+| Kernelyra native | **14.67 ms** per 30-step run — 1.82× faster than PyTorch in this workload |
+| Current optimisation target | NumPy is **4.22× faster** than Kernelyra here; this is not hidden or presented as a win |
+
+The matrix measures Kernelyra plus NumPy, PyTorch, TensorFlow, JAX,
+Flax/Optax, scikit-learn, River, XGBoost, LightGBM, and CatBoost. Tree and
+online learners use different algorithms, so they are reported without a false
+cross-family speed ranking. These CPU values are not GPU, LLM, image, or
+universal performance claims.
+
+<a id="capabilities"></a>
+
 ## What works in this alpha
 
 - Binary and multiclass classification, plus regression, on tabular data.
@@ -39,6 +70,8 @@ uses deterministic stratification and a detected time-like column preserves
 the supplied input order. A detected group/context column is currently an
 **advisory warning**; group-exclusive splitting is not implemented in 0.5.
 
+<a id="install"></a>
+
 ## Install from source
 
 PyPI publication is not configured. After the tagged GitHub Actions build succeeds,
@@ -52,6 +85,8 @@ python -m pip install -e .
 
 Install `.[data]` for Parquet, `.[torch]` for PyTorch, or `.[tensorflow]` for
 TensorFlow/Keras.
+
+<a id="powershell"></a>
 
 ## Three PowerShell commands
 
@@ -87,6 +122,8 @@ Import-Module .\powershell\Kernelyra.psd1 -Force
 Test-KernelyraDataset .\data\train.csv -Target label
 Get-KernelyraPlan .\data\train.csv -Target label
 ```
+
+<a id="limits"></a>
 
 ## Limits and roadmap boundary
 
