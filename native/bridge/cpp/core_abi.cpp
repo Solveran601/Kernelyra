@@ -41,6 +41,15 @@ void kr_zig_normalize_f32(
     float* data, size_t rows, size_t features, const float* means, const float* stds);
 void kr_zig_copy_f32(float* destination, const float* source, size_t values);
 void kr_zig_zero_f32(float* destination, size_t values);
+void kr_zig_fill_f32(float* destination, size_t values, float value);
+void kr_zig_scale_f32(float* destination, size_t values, float scale);
+void kr_zig_add_f32(float* destination, const float* source, size_t values);
+float kr_zig_sum_f32(const float* values, size_t count);
+float kr_zig_max_abs_f32(const float* values, size_t count);
+uint64_t kr_zig_repair_nonfinite_f32(float* data, size_t rows, size_t features, const float* means);
+uint32_t kr_zig_gather_rows_f32(
+    const float* source, size_t source_rows, size_t features, const size_t* selected,
+    size_t selected_rows, float* destination);
 uint32_t kr_zig_all_finite_f32(const float* values, size_t count);
 void kr_zig_clip_f32(float* values, size_t count, float limit);
 void* kr_zig_alloc_aligned(size_t bytes, size_t alignment);
@@ -51,6 +60,10 @@ void kr_fortran_gradient_f32(
     const float* x, const float* errors, size_t rows, size_t features, float* gradient);
 int kr_fortran_all_finite_f32(const float* values, size_t count);
 float kr_fortran_l2_norm_f32(const float* values, size_t count);
+float kr_fortran_clip_l2_f32(float* values, size_t count, float maximum_norm);
+void kr_fortran_moments_f32(
+    const float* values, size_t count, float* mean, float* standard_deviation);
+void kr_fortran_softmax_f32(float* values, size_t count);
 float kr_fortran_dot_f32(const float* left, const float* right, size_t values);
 void kr_fortran_axpy_f32(float* output, const float* row, float scale, size_t values);
 void kr_fortran_update_f32(
@@ -63,6 +76,10 @@ void kr_fortran_regression_train_f32(
     const float* x, const float* y, size_t rows, size_t features, float* weights, float* bias,
     float learning_rate, float decay, float target_mean, float target_std,
     float* errors, float* gradient, float* loss);
+void kr_fortran_multiclass_train_f32(
+    const float* x, const float* y, size_t rows, size_t features, size_t classes,
+    float* weights, float* bias, float learning_rate, float decay,
+    float* probabilities, float* gradient, float* bias_gradient, float* loss, int* status);
 #endif
 #if KR_HAS_RUST_POLICY
 uint64_t kr_rust_policy_mix_u64(uint64_t value);
@@ -107,6 +124,7 @@ struct Model {
   std::vector<float> scratch;
   std::vector<float> batch_x;
   std::vector<float> batch_y;
+  std::vector<size_t> batch_indices;
   std::vector<float> parallel_gradient;
   std::vector<float> parallel_bias;
   std::vector<double> parallel_loss;
@@ -780,8 +798,15 @@ void update_weights(
   update_scalar(weights, gradient, learning_rate, inverse, decay, features);
 }
 
+bool supported_model_abi(uint32_t version) {
+  // ABI 6 only adds standalone vector/memory exports; kr_model_config keeps
+  // its ABI-5 layout.  Accepting 5 preserves source compatibility with the
+  // packaged v5 Python orchestrator and older DLLs.
+  return version == 5U || version == KR_ABI_VERSION;
+}
+
 bool valid_model(const Model* model) {
-  return model != nullptr && model->config.abi_version == KR_ABI_VERSION &&
+  return model != nullptr && supported_model_abi(model->config.abi_version) &&
          model->config.features > 0;
 }
 
@@ -930,16 +955,22 @@ int train_regression_parallel(
 
 int train_binary(Model& model, const float* x, const float* y, size_t rows, float* loss) {
   const size_t features = model.config.features;
+#if KR_HAS_FORTRAN_NUMERIC
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    model.errors.resize(rows);
+    kr_fortran_binary_train_f32(
+        x, y, rows, features, model.weights.data(), model.bias.data(), model.config.learning_rate,
+        model.config.weight_decay, model.errors.data(), model.gradient.data(), loss);
+    return std::isfinite(*loss) ? 1 : fail("Fortran binary loss became non-finite");
+  }
+#endif
 #if defined(_OPENMP)
   if (model.config.threads > 1 && rows * features >= 1048576U) {
     return train_binary_parallel(model, x, y, rows, loss);
   }
 #endif
-  // The binary path keeps prediction and gradient accumulation in this AVX2
-  // translation unit.  Calling the Fortran row kernel once per example adds a
-  // function boundary to every dot product and is measurably slower on small
-  // and medium tabular matrices.  Fortran remains active for regression and
-  // numeric primitives; this branch is selected for locality, not semantics.
+  // This fallback is retained for diagnostic component masking and builds
+  // without gfortran; the normal native path above is owned by Fortran.
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
@@ -1076,6 +1107,18 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
 int train_multiclass(Model& model, const float* x, const float* y, size_t rows, float* loss) {
   const size_t features = model.config.features;
   const size_t classes = model.config.classes;
+#if KR_HAS_FORTRAN_NUMERIC
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    int status = 0;
+    kr_fortran_multiclass_train_f32(
+        x, y, rows, features, classes, model.weights.data(), model.bias.data(),
+        model.config.learning_rate, model.config.weight_decay, model.scratch.data(),
+        model.gradient.data(), model.bias_gradient.data(), loss, &status);
+    if (status == 1) return fail("multiclass target is outside configured class range");
+    if (status != 0 || !std::isfinite(*loss)) return fail("Fortran multiclass update became non-finite");
+    return 1;
+  }
+#endif
 #if defined(_OPENMP)
   constexpr size_t max_parallel_gradient_values = 8U * 1024U * 1024U;
   const size_t threads = static_cast<size_t>(configured_threads(model, rows));
@@ -1131,7 +1174,7 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
 
 extern "C" {
 
-const char* kr_core_version(void) { return "kernelyra-native/3.0"; }
+const char* kr_core_version(void) { return "kernelyra-native/3.1-dual-core"; }
 
 const char* kr_core_features(void) {
 #if KR_X86_GNU_SIMD
@@ -1305,6 +1348,12 @@ int kr_preprocess_f32(
   }
   std::atomic<bool> unrecoverable{false};
   uint64_t repaired = 0U;
+  uint64_t zig_repaired = 0U;
+#if KR_HAS_ZIG_MEMORY
+  if (impute && component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    zig_repaired = kr_zig_repair_nonfinite_f32(data, rows, features, means);
+  }
+#endif
 #if defined(_OPENMP)
 #pragma omp parallel for if(rows * features >= 1048576U) schedule(static) reduction(+:repaired)
 #endif
@@ -1335,7 +1384,7 @@ int kr_preprocess_f32(
     }
   }
   if (unrecoverable.load(std::memory_order_relaxed)) return fail("preprocess encountered a non-finite value");
-  if (repaired_values != nullptr) *repaired_values = repaired;
+  if (repaired_values != nullptr) *repaired_values = zig_repaired + repaired;
   return 1;
 }
 
@@ -1359,6 +1408,63 @@ void kr_memory_zero_f32(float* destination, size_t values) {
   }
 #endif
   std::fill(destination, destination + values, 0.0F);
+}
+
+void kr_memory_fill_f32(float* destination, size_t values, float value) {
+  if (destination == nullptr || values == 0U || !std::isfinite(value)) return;
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    kr_zig_fill_f32(destination, values, value);
+    return;
+  }
+#endif
+  std::fill(destination, destination + values, value);
+}
+
+void kr_memory_scale_f32(float* destination, size_t values, float scale) {
+  if (destination == nullptr || values == 0U || !std::isfinite(scale)) return;
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    kr_zig_scale_f32(destination, values, scale);
+    return;
+  }
+#endif
+  for (size_t index = 0U; index < values; ++index) destination[index] *= scale;
+}
+
+void kr_memory_add_f32(float* destination, const float* source, size_t values) {
+  if (destination == nullptr || source == nullptr || values == 0U) return;
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    kr_zig_add_f32(destination, source, values);
+    return;
+  }
+#endif
+  for (size_t index = 0U; index < values; ++index) destination[index] += source[index];
+}
+
+uint64_t kr_memory_repair_nonfinite_f32(
+    float* data, size_t rows, size_t features, const float* means) {
+  if (data == nullptr || means == nullptr || rows == 0U || features == 0U ||
+      rows > std::numeric_limits<size_t>::max() / features) {
+    return 0U;
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    return kr_zig_repair_nonfinite_f32(data, rows, features, means);
+  }
+#endif
+  uint64_t repaired = 0U;
+  for (size_t row = 0U; row < rows; ++row) {
+    for (size_t feature = 0U; feature < features; ++feature) {
+      float& value = data[row * features + feature];
+      if (!std::isfinite(value)) {
+        value = std::isfinite(means[feature]) ? means[feature] : 0.0F;
+        ++repaired;
+      }
+    }
+  }
+  return repaired;
 }
 
 uint32_t kr_values_all_finite_f32(const float* values, size_t count) {
@@ -1388,6 +1494,91 @@ void kr_values_clip_f32(float* values, size_t count, float limit) {
   for (size_t index = 0; index < count; ++index) {
     values[index] = std::clamp(values[index], -limit, limit);
   }
+}
+
+float kr_values_clip_l2_f32(float* values, size_t count, float maximum_norm) {
+  if (values == nullptr || !std::isfinite(maximum_norm) || maximum_norm <= 0.0F) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+#if KR_HAS_FORTRAN_NUMERIC
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    return kr_fortran_clip_l2_f32(values, count, maximum_norm);
+  }
+#endif
+  const float observed = kr_values_l2_norm_f32(values, count);
+  if (!std::isfinite(observed) || observed <= maximum_norm || observed == 0.0F) return observed;
+  kr_memory_scale_f32(values, count, maximum_norm / observed);
+  return observed;
+}
+
+float kr_values_sum_f32(const float* values, size_t count) {
+  if (values == nullptr || !values_are_finite(values, count)) return std::numeric_limits<float>::quiet_NaN();
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) return kr_zig_sum_f32(values, count);
+#endif
+  double total = 0.0;
+  for (size_t index = 0U; index < count; ++index) total += static_cast<double>(values[index]);
+  return static_cast<float>(total);
+}
+
+float kr_values_max_abs_f32(const float* values, size_t count) {
+  if (values == nullptr || !values_are_finite(values, count)) return std::numeric_limits<float>::quiet_NaN();
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) return kr_zig_max_abs_f32(values, count);
+#endif
+  float maximum = 0.0F;
+  for (size_t index = 0U; index < count; ++index) maximum = std::max(maximum, std::abs(values[index]));
+  return maximum;
+}
+
+int kr_values_moments_f32(const float* values, size_t count, float* mean, float* standard_deviation) {
+  if (values == nullptr || mean == nullptr || standard_deviation == nullptr ||
+      !values_are_finite(values, count)) {
+    return fail("moments require a finite values buffer and output pointers");
+  }
+#if KR_HAS_FORTRAN_NUMERIC
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    kr_fortran_moments_f32(values, count, mean, standard_deviation);
+    return std::isfinite(*mean) && std::isfinite(*standard_deviation) ? 1 : fail("Fortran moments became non-finite");
+  }
+#endif
+  if (count == 0U) {
+    *mean = 0.0F;
+    *standard_deviation = 0.0F;
+    return 1;
+  }
+  double running_mean = 0.0;
+  double running_square = 0.0;
+  for (size_t index = 0U; index < count; ++index) {
+    const double position = static_cast<double>(index + 1U);
+    const double delta = static_cast<double>(values[index]) - running_mean;
+    running_mean += delta / position;
+    running_square += delta * (static_cast<double>(values[index]) - running_mean);
+  }
+  *mean = static_cast<float>(running_mean);
+  *standard_deviation = static_cast<float>(std::sqrt(std::max(0.0, running_square / static_cast<double>(count))));
+  return 1;
+}
+
+int kr_values_softmax_f32(float* values, size_t count) {
+  if (values == nullptr || count == 0U || !values_are_finite(values, count)) {
+    return fail("softmax requires a non-empty finite values buffer");
+  }
+#if KR_HAS_FORTRAN_NUMERIC
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    kr_fortran_softmax_f32(values, count);
+    return values_are_finite(values, count) ? 1 : fail("Fortran softmax became non-finite");
+  }
+#endif
+  const float maximum = *std::max_element(values, values + count);
+  double denominator = 0.0;
+  for (size_t index = 0U; index < count; ++index) {
+    values[index] = std::exp(values[index] - maximum);
+    denominator += static_cast<double>(values[index]);
+  }
+  if (denominator <= 0.0) return fail("softmax denominator is invalid");
+  for (size_t index = 0U; index < count; ++index) values[index] = static_cast<float>(values[index] / denominator);
+  return 1;
 }
 
 void kr_numeric_gradient_f32(
@@ -1432,7 +1623,7 @@ void kr_memory_free_aligned(void* pointer) {
 
 void* kr_model_create(const kr_model_config* config) {
   last_error.clear();
-  if (config == nullptr || config->abi_version != KR_ABI_VERSION) {
+  if (config == nullptr || !supported_model_abi(config->abi_version)) {
     fail("unsupported native ABI version");
     return nullptr;
   }
@@ -1500,15 +1691,29 @@ int kr_model_train_random_step(
   try {
     model->batch_x.resize(batch_size * model->config.features);
     model->batch_y.resize(batch_size);
+    model->batch_indices.resize(batch_size);
   } catch (const std::bad_alloc&) {
     return fail("native random batch does not fit in memory");
   }
   const size_t features = model->config.features;
   for (size_t sample = 0; sample < batch_size; ++sample) {
     const size_t selected = static_cast<size_t>(next_random(model->rng_state) % rows);
-    const float* source = x + selected * features;
-    std::copy(source, source + features, model->batch_x.data() + sample * features);
+    model->batch_indices[sample] = selected;
     model->batch_y[sample] = y[selected];
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    if (kr_zig_gather_rows_f32(x, rows, features, model->batch_indices.data(), batch_size,
+                                model->batch_x.data()) == 0U) {
+      return fail("Zig batch gather rejected the selected rows");
+    }
+  } else
+#endif
+  {
+    for (size_t sample = 0; sample < batch_size; ++sample) {
+      const float* source = x + model->batch_indices[sample] * features;
+      std::copy(source, source + features, model->batch_x.data() + sample * features);
+    }
   }
   return kr_model_train_step(handle, model->batch_x.data(), model->batch_y.data(), batch_size, loss);
 }

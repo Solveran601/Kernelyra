@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-enum { KR_ABI_VERSION = 5 };
+enum { KR_ABI_VERSION = 6 };
 enum { KR_TASK_BINARY = 0, KR_TASK_MULTICLASS = 1, KR_TASK_REGRESSION = 2 };
 enum { KR_SPLIT_TRAIN = 0, KR_SPLIT_VALIDATION = 1, KR_SPLIT_TEST = 2 };
 enum {
@@ -71,9 +71,20 @@ KR_API int kr_preprocess_f32(
     uint64_t* repaired_values);
 KR_API void kr_memory_copy_f32(float* destination, const float* source, size_t values);
 KR_API void kr_memory_zero_f32(float* destination, size_t values);
+KR_API void kr_memory_fill_f32(float* destination, size_t values, float value);
+KR_API void kr_memory_scale_f32(float* destination, size_t values, float scale);
+KR_API void kr_memory_add_f32(float* destination, const float* source, size_t values);
+KR_API uint64_t kr_memory_repair_nonfinite_f32(
+    float* data, size_t rows, size_t features, const float* means);
 KR_API uint32_t kr_values_all_finite_f32(const float* values, size_t count);
 KR_API float kr_values_l2_norm_f32(const float* values, size_t count);
 KR_API void kr_values_clip_f32(float* values, size_t count, float limit);
+KR_API float kr_values_clip_l2_f32(float* values, size_t count, float maximum_norm);
+KR_API float kr_values_sum_f32(const float* values, size_t count);
+KR_API float kr_values_max_abs_f32(const float* values, size_t count);
+KR_API int kr_values_moments_f32(
+    const float* values, size_t count, float* mean, float* standard_deviation);
+KR_API int kr_values_softmax_f32(float* values, size_t count);
 KR_API uint64_t kr_rust_mix_u64(uint64_t value);
 KR_API uint32_t kr_rust_split_for_key(
     uint64_t group_key, uint32_t validation_percent, uint32_t test_percent);

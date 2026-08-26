@@ -9,12 +9,18 @@ set(KERNELYRA_NATIVE_SOURCES
   bridge/cpp/context_policy.cpp
   core/fortran/numeric_constants.f90
   core/fortran/numeric_precision.f90
+  core/fortran/numeric_moments.f90
+  core/fortran/activation_softmax.f90
   core/fortran/loss_binary.f90
+  core/fortran/loss_multiclass.f90
   core/fortran/loss_regression.f90
   core/fortran/gradient_layout.f90
   core/fortran/vector_kernels.f90
   core/fortran/gradient_kernels.f90
+  core/fortran/optimizer_clip.f90
   core/fortran/training_state.f90
+  core/fortran/matrix_scores.f90
+  core/fortran/multiclass_training.f90
   core/fortran/training_kernels.f90
 )
 add_library(kernelyra_core SHARED ${KERNELYRA_NATIVE_SOURCES})
@@ -61,11 +67,15 @@ add_custom_command(
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_alignment.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_allocator.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arithmetic.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_clip.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_finite.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_transfer.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_guard.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_normalize.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_reduce.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_repair.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_rows.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_shape.zig"
   VERBATIM)
 set_source_files_properties("${KERNELYRA_ZIG_OBJECT}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)

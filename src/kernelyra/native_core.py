@@ -140,12 +140,18 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             for name in (
                 "numeric_constants.f90",
                 "numeric_precision.f90",
+                "numeric_moments.f90",
+                "activation_softmax.f90",
                 "loss_binary.f90",
+                "loss_multiclass.f90",
                 "loss_regression.f90",
                 "gradient_layout.f90",
                 "vector_kernels.f90",
                 "gradient_kernels.f90",
+                "optimizer_clip.f90",
                 "training_state.f90",
+                "matrix_scores.f90",
+                "multiclass_training.f90",
                 "training_kernels.f90",
             )
         ]
@@ -370,6 +376,47 @@ class NativeCore:
         library.kr_values_l2_norm_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
         library.kr_values_l2_norm_f32.restype = ctypes.c_float
         library.kr_values_clip_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+        self._extended_zig_memory_available = all(
+            hasattr(library, name)
+            for name in (
+                "kr_memory_fill_f32",
+                "kr_memory_scale_f32",
+                "kr_memory_add_f32",
+                "kr_memory_repair_nonfinite_f32",
+                "kr_values_sum_f32",
+                "kr_values_max_abs_f32",
+            )
+        )
+        if self._extended_zig_memory_available:
+            library.kr_memory_fill_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+            library.kr_memory_scale_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+            library.kr_memory_add_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t
+            ]
+            library.kr_memory_repair_nonfinite_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_float)
+            ]
+            library.kr_memory_repair_nonfinite_f32.restype = ctypes.c_uint64
+            library.kr_values_sum_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_sum_f32.restype = ctypes.c_float
+            library.kr_values_max_abs_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_max_abs_f32.restype = ctypes.c_float
+        self._extended_fortran_numeric_available = all(
+            hasattr(library, name)
+            for name in ("kr_values_clip_l2_f32", "kr_values_moments_f32", "kr_values_softmax_f32")
+        )
+        if self._extended_fortran_numeric_available:
+            library.kr_values_clip_l2_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float
+            ]
+            library.kr_values_clip_l2_f32.restype = ctypes.c_float
+            library.kr_values_moments_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
+            ]
+            library.kr_values_moments_f32.restype = ctypes.c_int
+            library.kr_values_softmax_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_softmax_f32.restype = ctypes.c_int
         library.kr_rust_mix_u64.argtypes = [ctypes.c_uint64]
         library.kr_rust_mix_u64.restype = ctypes.c_uint64
         library.kr_rust_split_for_key.argtypes = [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32]
@@ -748,6 +795,46 @@ class NativeCore:
         )
         return array
 
+    def moments(self, values: np.ndarray) -> tuple[float, float]:
+        """Return stable population moments through the Fortran numeric core."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        mean = ctypes.c_float()
+        standard_deviation = ctypes.c_float()
+        ok = self.library.kr_values_moments_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size,
+            ctypes.byref(mean), ctypes.byref(standard_deviation),
+        )
+        if not ok:
+            raise self.error()
+        return float(mean.value), float(standard_deviation.value)
+
+    def softmax(self, values: np.ndarray) -> np.ndarray:
+        """Return a normalized float32 score vector through Fortran softmax."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1).copy()
+        if array.size == 0:
+            raise NativeCoreError("softmax requires at least one value")
+        if not self.library.kr_values_softmax_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size
+        ):
+            raise self.error()
+        return array
+
+    def clip_l2(self, values: np.ndarray, maximum_norm: float) -> tuple[np.ndarray, float]:
+        """Return a Fortran-clipped copy and the L2 norm observed before clipping."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1).copy()
+        observed = float(self.library.kr_values_clip_l2_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size, ctypes.c_float(maximum_norm)
+        ))
+        if not math.isfinite(observed):
+            raise self.error()
+        return array, observed
+
     def preprocess_f32(
         self,
         values: np.ndarray,
@@ -816,6 +903,64 @@ class NativeCore:
             source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             destination.size,
         )
+
+    def fill_f32(self, values: np.ndarray, value: float) -> None:
+        """Fill a float32 array through Zig's explicit buffer kernel."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        values = self._native_float_array(values, name="values")
+        self.library.kr_memory_fill_f32(
+            values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size, ctypes.c_float(value)
+        )
+
+    def scale_f32(self, values: np.ndarray, scale: float) -> None:
+        """Scale a float32 array in place through Zig."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        values = self._native_float_array(values, name="values")
+        self.library.kr_memory_scale_f32(
+            values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size, ctypes.c_float(scale)
+        )
+
+    def add_f32(self, destination: np.ndarray, source: np.ndarray) -> None:
+        """Add equal-sized float32 arrays in place through Zig."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        destination = self._native_float_array(destination, name="destination")
+        source = self._native_float_array(source, name="source")
+        if destination.size != source.size:
+            raise NativeCoreError("Native memory add requires equal-sized arrays")
+        self.library.kr_memory_add_f32(
+            destination.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), destination.size,
+        )
+
+    def memory_summary(self, values: np.ndarray) -> tuple[float, float]:
+        """Return Zig-computed sum and maximum absolute value for a finite array."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        pointer = array.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        return float(self.library.kr_values_sum_f32(pointer, array.size)), float(
+            self.library.kr_values_max_abs_f32(pointer, array.size)
+        )
+
+    def repair_nonfinite_f32(self, values: np.ndarray, means: np.ndarray) -> tuple[np.ndarray, int]:
+        """Repair a matrix through Zig before a caller chooses normalization."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        matrix = np.ascontiguousarray(values, dtype=np.float32)
+        if matrix.ndim != 2:
+            raise NativeCoreError("repair values must be a two-dimensional array")
+        output = matrix.copy()
+        mean_array = np.ascontiguousarray(means, dtype=np.float32).reshape(-1)
+        if mean_array.size != output.shape[1]:
+            raise NativeCoreError("repair means must match the feature count")
+        repaired = self.library.kr_memory_repair_nonfinite_f32(
+            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.shape[0], output.shape[1],
+            mean_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+        return output, int(repaired)
 
     def zero_f32(self, values: np.ndarray) -> None:
         """Zero a float32 array through the selected memory kernel."""

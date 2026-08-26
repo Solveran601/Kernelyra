@@ -68,6 +68,47 @@ int main() {
               "non-finite values are rejected when repair is disabled")) {
     return 1;
   }
+  float zig_values[] = {1.0F, -2.0F, 3.0F};
+  const float zig_add[] = {1.0F, 2.0F, 3.0F};
+  kr_memory_fill_f32(zig_values, 3U, 2.0F);
+  kr_memory_scale_f32(zig_values, 3U, 0.5F);
+  kr_memory_add_f32(zig_values, zig_add, 3U);
+  if (!expect(std::abs(kr_values_sum_f32(zig_values, 3U) - 9.0F) < 1.0e-6F,
+              "Zig sum uses the transformed buffer") ||
+      !expect(std::abs(kr_values_max_abs_f32(zig_values, 3U) - 4.0F) < 1.0e-6F,
+              "Zig max-absolute reduction is correct")) {
+    return 1;
+  }
+  float repair_only[] = {std::numeric_limits<float>::quiet_NaN(), 3.0F,
+                         std::numeric_limits<float>::infinity(), -1.0F};
+  if (!expect(kr_memory_repair_nonfinite_f32(repair_only, 2U, 2U, means) == 2U,
+              "Zig repair counts non-finite matrix values") ||
+      !expect(repair_only[0] == 0.0F && repair_only[2] == 0.0F,
+              "Zig repair uses the matching feature mean")) {
+    return 1;
+  }
+  const float moment_values[] = {1.0F, 2.0F, 3.0F, 4.0F};
+  float mean = 0.0F;
+  float standard_deviation = 0.0F;
+  if (!expect(kr_values_moments_f32(moment_values, 4U, &mean, &standard_deviation) == 1,
+              "Fortran moments accepts a finite vector") ||
+      !expect(std::abs(mean - 2.5F) < 1.0e-6F && std::abs(standard_deviation - std::sqrt(1.25F)) < 1.0e-6F,
+              "Fortran moments are stable and correct")) {
+    return 1;
+  }
+  float logits[] = {-2.0F, 0.0F, 1.0F};
+  if (!expect(kr_values_softmax_f32(logits, 3U) == 1, "Fortran softmax succeeds") ||
+      !expect(std::abs(kr_values_sum_f32(logits, 3U) - 1.0F) < 1.0e-5F && logits[2] > logits[1] && logits[1] > logits[0],
+              "Fortran softmax returns an ordered probability distribution")) {
+    return 1;
+  }
+  float gradient[] = {3.0F, 4.0F};
+  if (!expect(std::abs(kr_values_clip_l2_f32(gradient, 2U, 2.0F) - 5.0F) < 1.0e-6F,
+              "Fortran gradient clip reports the observed norm") ||
+      !expect(std::abs(kr_values_l2_norm_f32(gradient, 2U) - 2.0F) < 1.0e-5F,
+              "Fortran gradient clip enforces the requested L2 bound")) {
+    return 1;
+  }
 
   kr_c_execution_request request{};
   request.abi_version = KR_ABI_VERSION;
@@ -115,5 +156,37 @@ int main() {
     scheduled += chunk;
   }
   if (!expect(scheduled == 100000U, "cursor schedules every record once")) return 1;
+  const float multiclass_x[] = {
+      -2.0F, -1.0F, -1.5F, -2.0F,
+       2.0F, -1.0F,  1.5F, -2.0F,
+       0.0F,  2.0F,  0.5F,  1.5F,
+  };
+  const float multiclass_y[] = {0.0F, 0.0F, 1.0F, 1.0F, 2.0F, 2.0F};
+  kr_model_config multiclass{};
+  multiclass.abi_version = KR_ABI_VERSION;
+  multiclass.task = KR_TASK_MULTICLASS;
+  multiclass.features = 2U;
+  multiclass.classes = 3U;
+  multiclass.learning_rate = 0.1F;
+  multiclass.weight_decay = 0.0F;
+  void* model = kr_model_create(&multiclass);
+  if (!expect(model != nullptr, "multiclass model is created")) return 1;
+  float first_loss = 0.0F;
+  float final_loss = 0.0F;
+  for (size_t step = 0U; step < 80U; ++step) {
+    float* destination = step == 0U ? &first_loss : &final_loss;
+    if (!expect(kr_model_train_step(model, multiclass_x, multiclass_y, 6U, destination) == 1,
+                "Fortran multiclass training step succeeds")) {
+      kr_model_destroy(model);
+      return 1;
+    }
+  }
+  std::vector<float> probabilities(18U);
+  const bool prediction_ok = kr_model_predict(model, multiclass_x, 6U, probabilities.data(), probabilities.size()) == 1;
+  kr_model_destroy(model);
+  if (!expect(prediction_ok && std::isfinite(final_loss) && final_loss < first_loss,
+              "Fortran multiclass core reduces loss and predicts")) {
+    return 1;
+  }
   return 0;
 }
