@@ -16,32 +16,10 @@ API, PowerShell-модуле и JSONL-протоколе для поставля
 
 <p align="center">
   <a href="#capabilities">Возможности</a> ·
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md">CPU-бенчмарк</a> ·
   <a href="#install">Установка</a> ·
   <a href="#powershell">PowerShell</a> ·
   <a href="#limits">Ограничения</a>
 </p>
-
-## CPU benchmark snapshot
-
-<p align="center">
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md">Методика и результаты</a> ·
-  <a href="reports/cpu-framework-matrix-2026-08-26.json">Исходный JSON</a> ·
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md#reproduce">Повторить запуск</a>
-</p>
-
-| Одинаковая float32 full-batch logistic-regression задача, только CPU | Результат |
-| --- | --- |
-| Машина и метод | Intel Core i5-1235U; один общий CPU-поток; 8 192 train + 2 048 hold-out строк; медиана 3 запусков |
-| Качество | Kernelyra, NumPy, PyTorch, TensorFlow, JAX и Flax/Optax: **96.09% hold-out accuracy** |
-| Kernelyra native | **14.67 мс** на 30 шагов — в 1.82× быстрее PyTorch в этой задаче |
-| Текущая цель оптимизации | NumPy здесь **в 4.22× быстрее** Kernelyra; это не скрывается и не выдаётся за победу |
-
-Матрица измеряет Kernelyra плюс NumPy, PyTorch, TensorFlow, JAX, Flax/Optax,
-scikit-learn, River, XGBoost, LightGBM и CatBoost. Деревья и online-обучение
-используют другие алгоритмы, поэтому они приведены без ложного общего рейтинга
-скорости. Эти CPU-значения не являются заявлениями о GPU, LLM, изображениях или
-универсальной производительности.
 
 <a id="capabilities"></a>
 
@@ -137,17 +115,6 @@ Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack thro
 `hybrid` требует обнаруженного ускорителя и установленного совместимого
 опционального backend; это не обещание, что встроенный native-backend обучает
 на любой GPU.
-
-V3 workflow benchmark измеряет локальную предварительную проверку и
-планирование; это не сравнение с конкурентами и не универсальное заявление о
-скорости. Точные входные данные и окружение сохранены в
-[V3 JSON-отчёте](reports/v3-workflow-benchmark-2026-08-25.json).
-Отдельный CPU-only matched-linear запуск сохраняет фактические результаты
-Kernelyra, NumPy, PyTorch и JAX без ранжирования разных алгоритмов в
-[framework matrix](reports/v3-framework-cpu-2026-08-25.json).
-Более новая [CPU-матрица](reports/CPU_BENCHMARK_2026-08-26.md) фиксирует
-Kernelyra и десять ML-библиотек на независимом hold-out наборе, оставляя
-деревья и online-обучение вне линейного сравнения скорости.
 
 ## Дополнительно
 

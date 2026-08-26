@@ -34,7 +34,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("dataset", type=Path, help="Flat HIGGS CSV")
     parser.add_argument("--label", default="is_boson", help="Binary target column in the downloaded HIGGS CSV")
-    parser.add_argument("--workspace", type=Path, default=Path(".benchmarks/higgs-workspace"))
+    parser.add_argument("--workspace", type=Path, default=Path(".kernelyra/higgs-workspace"))
     parser.add_argument("--ram-percent", type=int, default=50, help="Hard RAM budget as a percent (10..95)")
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--target", type=float, default=0.72, help="Validation target metric")

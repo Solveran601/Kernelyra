@@ -3,10 +3,8 @@ include setup.py
 include worker.py start_worker.bat start_worker.ps1 requirements.txt
 recursive-include examples *.py
 recursive-include scripts *.py
-include scripts/install_benchmark_stack.ps1
 include scripts/install_powershell_module.ps1
 recursive-include powershell *.psm1 *.psd1
-recursive-include reports *.json *.md
 recursive-include assets/brand *.png *.svg
 recursive-include constraints *.txt
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90

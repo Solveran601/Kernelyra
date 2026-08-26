@@ -19,32 +19,10 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 
 <p align="center">
   <a href="#capabilities">Capabilities</a> ·
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md">CPU benchmark</a> ·
   <a href="#install">Install</a> ·
   <a href="#powershell">PowerShell</a> ·
   <a href="#limits">Limits</a>
 </p>
-
-## CPU benchmark snapshot
-
-<p align="center">
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md">Read the methodology</a> ·
-  <a href="reports/cpu-framework-matrix-2026-08-26.json">Open raw JSON</a> ·
-  <a href="reports/CPU_BENCHMARK_2026-08-26.md#reproduce">Reproduce</a>
-</p>
-
-| Same float32 full-batch logistic-regression task, CPU-only | Result |
-| --- | --- |
-| Machine and method | Intel Core i5-1235U; one shared CPU thread; 8,192 train + 2,048 held-out rows; median of 3 runs |
-| Quality | Kernelyra, NumPy, PyTorch, TensorFlow, JAX, and Flax/Optax: **96.09% hold-out accuracy** |
-| Kernelyra native | **14.67 ms** per 30-step run — 1.82× faster than PyTorch in this workload |
-| Current optimisation target | NumPy is **4.22× faster** than Kernelyra here; this is not hidden or presented as a win |
-
-The matrix measures Kernelyra plus NumPy, PyTorch, TensorFlow, JAX,
-Flax/Optax, scikit-learn, River, XGBoost, LightGBM, and CatBoost. Tree and
-online learners use different algorithms, so they are reported without a false
-cross-family speed ranking. These CPU values are not GPU, LLM, image, or
-universal performance claims.
 
 <a id="capabilities"></a>
 
@@ -136,16 +114,6 @@ images, audio, video, 3D, or other modalities. Recognizing an extension is not
 the same as extracting it, training it, or supporting it as a model container.
 `hybrid` requires a detected accelerator and an installed compatible optional
 backend; it is not a promise that the bundled native backend trains on every GPU.
-
-The V3 workflow benchmark is a local preflight/planning measurement, not a
-comparison or a universal performance claim. Its exact input and environment
-are saved in [the V3 JSON report](reports/v3-workflow-benchmark-2026-08-25.json).
-A separate CPU-only matched-linear run records the measured Kernelyra, NumPy,
-PyTorch, and JAX results without ranking different algorithms in
-[the framework matrix](reports/v3-framework-cpu-2026-08-25.json).
-The newer [CPU matrix](reports/CPU_BENCHMARK_2026-08-26.md) records Kernelyra
-and ten ML libraries on an independent hold-out split, while keeping tree and
-online learners outside the linear speed comparison.
 
 ## More information
 
