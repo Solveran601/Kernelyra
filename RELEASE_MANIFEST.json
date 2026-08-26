@@ -1,27 +1,27 @@
 {
   "artifacts": [
     {
-      "name": "kernelyra_ai-0.5.0a1-py3-none-win_amd64.whl",
-      "sha256": "4ef29665490bf3bfa8f92770b218b51bedc421e0f63af303c3a9082262685602",
-      "size_bytes": 1621437
+      "name": "kernelyra_ai-0.5.0a2-py3-none-win_amd64.whl",
+      "sha256": "432362b64b35b065d104d22ab48d63fe00c18b30024c3095696d8be7100b5fa2",
+      "size_bytes": 1623749
     },
     {
-      "name": "kernelyra_ai-0.5.0a1-source.zip",
-      "sha256": "759b7b08c58d719c445605570021980f567e341befbf9150295a074a7afb3d81",
-      "size_bytes": 1053073
+      "name": "kernelyra_ai-0.5.0a2-source.zip",
+      "sha256": "2a637a5272993c336b16e685622008e3c01a141433ca194253af55edbae1666e",
+      "size_bytes": 1057322
     },
     {
-      "name": "kernelyra_ai-0.5.0a1.tar.gz",
-      "sha256": "b01a0dbcbda42903db188e6106f936f6f8232def8cf49e106f13dfa6b28dd875",
-      "size_bytes": 952620
+      "name": "kernelyra_ai-0.5.0a2.tar.gz",
+      "sha256": "3d8b26c455494982663d7582eeb195138689d274e4ccf4e211d368b3ed86ffe7",
+      "size_bytes": 956284
     }
   ],
   "contract": "kernelyra-release-manifest/1",
   "dependency_manifest": {
     "name": "DEPENDENCY_MANIFEST.json",
-    "sha256": "d4814f732ee6f17187fbfcdf3347a63e459d9d2dbb27ed0af24b7860aa8bbef4"
+    "sha256": "21ad77cd0586ed389993ac52d6df318dd2254cb9531405a50bcbc4927ab0ff0c"
   },
   "published": false,
   "status": "pre-release",
-  "version": "0.5.0a1"
+  "version": "0.5.0a2"
 }

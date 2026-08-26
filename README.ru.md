@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Нативное обучение табличных данных с контролем ресурсов.</strong></p>
 
-Kernelyra **0.5.0a1 (V3 alpha)** — локальная библиотека для обучения табличных
+Kernelyra **0.5.0a2 (V3 alpha)** — локальная библиотека для обучения табличных
 моделей из терминала. Один и тот же путь планирования доступен в CLI, Python
 API, PowerShell-модуле и JSONL-протоколе для поставляемых SDK.
 
@@ -53,9 +53,12 @@ scikit-learn, River, XGBoost, LightGBM и CatBoost. Деревья и online-о�
   Parquet.
 - Встроенные native и NumPy backend; PyTorch и TensorFlow/Keras — опционально,
   когда они установлены.
-- Автоматический план ресурсов, четыре программы выполнения (слабый ПК,
-  сбалансированный ПК, мощный ПК, рабочая станция), checkpoints, resume,
-  отложенная проверка и восстановление лучшего checkpoint.
+- Явный выбор выполнения `cpu` или `hybrid`, заданные разработчиком лимиты
+  CPU/RAM/GPU/потоков и четыре необязательных пакета алгоритмов (`careful`,
+  `balanced`, `throughput`, `maximum`). Пакеты меняют ограниченные значения
+  чанков/предзагрузки/рабочей памяти, но не классифицируют компьютер
+  пользователя. Есть checkpoints, resume, отложенная проверка и восстановление
+  лучшего checkpoint.
 - Data Doctor: ограниченная предварительная проверка, подписанный контракт
   датасета, детерминированная рекомендация split и план неравномерных чанков.
 - Model Guard V2: проверка конечности метрик и сохранение тренда качества в
@@ -90,8 +93,8 @@ TensorFlow/Keras.
 
 ```powershell
 python -m kernelyra doctor
-python -m kernelyra plan .\data\train.csv --target label
-python -m kernelyra train .\data\train.csv --target label
+python -m kernelyra execution
+python -m kernelyra plan .\data\train.csv --target label --execution cpu --pack throughput --cpu 100 --ram 85 --threads 12
 ```
 
 При необходимости сначала выполни явную проверку данных:
@@ -119,6 +122,7 @@ print(report["output"])
 Import-Module .\powershell\Kernelyra.psd1 -Force
 Test-KernelyraDataset .\data\train.csv -Target label
 Get-KernelyraPlan .\data\train.csv -Target label
+Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack throughput -Cpu 100 -Ram 85 -Threads 12
 ```
 
 <a id="limits"></a>
@@ -130,6 +134,9 @@ Get-KernelyraPlan .\data\train.csv -Target label
 изображений, аудио, видео, 3D и других модальностей. Распознавание расширения
 не означает, что его можно извлечь, обучать на нём модель или использовать как
 поддерживаемый model container.
+`hybrid` требует обнаруженного ускорителя и установленного совместимого
+опционального backend; это не обещание, что встроенный native-backend обучает
+на любой GPU.
 
 V3 workflow benchmark измеряет локальную предварительную проверку и
 планирование; это не сравнение с конкурентами и не универсальное заявление о

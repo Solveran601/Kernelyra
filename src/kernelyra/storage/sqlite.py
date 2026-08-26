@@ -109,10 +109,18 @@ class SQLiteStorage:
         merged.setdefault("created_at", time.time())
         merged.setdefault("priority", "normal")
         merged.setdefault("profile", "eco")
+        merged.setdefault("execution", "cpu")
+        merged.setdefault(
+            "algorithm_pack",
+            {"eco": "careful", "low-memory": "careful", "performance": "throughput", "workstation": "maximum"}.get(
+                str(merged["profile"]), "balanced"
+            ),
+        )
         merged.setdefault("max_steps", 1000)
         merged.setdefault("cpu", 30)
         merged.setdefault("ram", 35)
         merged.setdefault("gpu", 0)
+        merged.setdefault("threads", 1)
         merged.setdefault("mode", "Новая модель")
         merged.setdefault("loss", 0.0)
         merged.setdefault("step", 0)

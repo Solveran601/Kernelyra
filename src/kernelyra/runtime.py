@@ -14,7 +14,7 @@ from typing import Any
 from .backends import WORKER_PROTOCOL_VERSION, BackendConfig, BackendWorker, ProcessBackendWorker
 from .checkpoints import CheckpointManager
 from .errors import ConfigurationError, RunError, RunStateError
-from .hardware import PROFILE_PRESETS, recommend_profile
+from .hardware import ALGORITHM_PACKS
 from .model_guard import assess_trend
 from .models import RunInfo
 from .quality import QualityGate
@@ -362,6 +362,10 @@ class TrainingRuntime:
             features=dataset.features,
             batch_size=run.batch_size,
             streaming=bool(dataset_spec),
+            execution_target=run.execution,
+            algorithm_pack=run.algorithm_pack,
+            threads=run.threads,
+            cpu_percent=run.cpu,
         )
         config_payload = {
             "dataset_hash": dataset.sha256,
@@ -370,6 +374,9 @@ class TrainingRuntime:
             "architecture": run.architecture,
             "model_format": run.model_format,
             "profile": run.profile,
+            "execution": run.execution,
+            "algorithm_pack": run.algorithm_pack,
+            "threads": run.threads,
             "seed": run.seed,
             "features": dataset.features,
             "streaming": bool(dataset_spec),
@@ -409,7 +416,7 @@ class TrainingRuntime:
                 "memory_bytes": max(256 * 1024**2, int(total_memory * run.ram / 100)),
                 "cpu_percent": run.cpu,
                 "gpu_memory_mb": int(gpu_memory * run.gpu / 100),
-                "gpu_enabled": bool(run.gpu and self.workspace.hardware.get("gpu_available")),
+                "gpu_enabled": bool(run.execution == "hybrid" and run.gpu and self.workspace.hardware.get("gpu_available")),
                 "native_threads": tuning["native_threads"],
                 "arena_bytes": tuning["arena_bytes"],
                 "bulk_step_cap": tuning["bulk_step_cap"],
@@ -801,12 +808,6 @@ class TrainingRuntime:
     def snapshot(self) -> dict[str, Any]:
         runs = self.storage.list_runs()
         datasets = self.workspace.datasets.list()
-        recommended = recommend_profile(self.workspace.hardware)
-        profiles = [
-            {"id": key, **value, "recommended": key == recommended}
-            for key, value in PROFILE_PRESETS.items()
-            if key != "eco"
-        ]
         return {
             "runs": [run.to_dict() for run in runs],
             "usage": self.usage(),
@@ -817,8 +818,8 @@ class TrainingRuntime:
             },
             "datasets": [item.to_dict() for item in datasets],
             "hardware": self.workspace.hardware,
-            "profiles": profiles,
-            "recommended_profile": recommended,
+            "execution_targets": ["cpu", "hybrid"],
+            "algorithm_packs": {key: dict(value) for key, value in ALGORITHM_PACKS.items()},
             "model_formats": self.workspace.capabilities["model_formats"],
             "format_router_minimum": self.workspace.datasets.router.route_count,
             "capabilities": self.workspace.capabilities,

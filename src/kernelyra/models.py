@@ -134,6 +134,8 @@ class RunConfig:
     name: str = "new-classifier"
     mode: str = "Новая модель"
     profile: str = "auto"
+    execution: str = "auto"
+    algorithm_pack: str = "balanced"
     priority: str = "normal"
     target_metric: float = 0.92
     batch_mode: str = "auto"
@@ -142,6 +144,7 @@ class RunConfig:
     cpu: int | None = None
     ram: int | None = None
     gpu: int | None = None
+    threads: int | None = None
     base_run_id: str | None = None
     model_path: str | None = None
     accept_batch_risk: bool = False
@@ -150,8 +153,8 @@ class RunConfig:
     weight_decay: float = 0.0
     hidden_layers: tuple[int, ...] = ()
     precision: str = "auto"
-    data_workers: int = 0
-    prefetch: int = 1
+    data_workers: int | None = None
+    prefetch: int | None = None
     evaluation_interval: int | None = None
     min_improvement: float = 0.0005
     degradation_margin: float | None = None
@@ -175,6 +178,8 @@ class RunInfo:
     model_format: str
     mode: str
     profile: str
+    execution: str
+    algorithm_pack: str
     priority: str
     target_score: float
     batch_mode: str
@@ -188,6 +193,7 @@ class RunInfo:
     cpu: int
     ram: int
     gpu: int
+    threads: int
     base_run_id: str | None = None
     model_path: str | None = None
     seed: int = 42

@@ -15,7 +15,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.5.0a1"
+VERSION = "0.5.0a2"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4
@@ -42,9 +42,11 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("formats", help="List recognized routes and installed trainable adapters")
     advise = commands.add_parser("advise", help="Inspect a file with the bounded Rust format probe and suggest a safe AI data path")
     advise.add_argument("path")
-    commands.add_parser("modes", help="Show the four adaptive execution programs for this computer")
+    commands.add_parser("execution", help="Show CPU/hybrid targets and the four algorithm packs")
     tune = commands.add_parser("tune", help="Preview deterministic native execution tuning")
-    tune.add_argument("--profile", choices=["auto", "eco", "low-memory", "balanced", "performance", "workstation", "custom"], default="auto")
+    tune.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
+    tune.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], default="balanced")
+    tune.add_argument("--profile", help=argparse.SUPPRESS)
     tune.add_argument("--records", type=int, default=100_000)
     tune.add_argument("--features", type=int, default=32)
     tune.add_argument("--batch-size", type=int, default=64)
@@ -64,10 +66,9 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--backend", choices=["auto", "native", "torch", "tensorflow", "numpy"])
         item.add_argument("--architecture", choices=["auto", "linear", "mlp", "transformer", "cnn", "vision-transformer", "rnn", "pointnet", "graph-neural-network"])
         item.add_argument("--model-format", choices=["auto", "kernelyra-npz", "pytorch-state", "keras", "gguf", "safetensors", "onnx"])
-        item.add_argument(
-            "--profile",
-            choices=["auto", "eco", "low-memory", "balanced", "performance", "workstation", "custom"],
-        )
+        item.add_argument("--execution", choices=["auto", "cpu", "hybrid"], help="CPU only or CPU plus detected accelerator")
+        item.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], help="Algorithm pack; resource limits remain explicit")
+        item.add_argument("--profile", help=argparse.SUPPRESS)
         item.add_argument("--batch-size", type=int)
         item.add_argument("--accept-batch-risk", action="store_true")
         item.add_argument("--max-steps", type=int)
@@ -79,6 +80,7 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--cpu", type=int, help="CPU limit in percent")
         item.add_argument("--ram", type=int, help="RAM limit in percent")
         item.add_argument("--gpu", type=int, help="GPU limit in percent")
+        item.add_argument("--threads", type=int, help="Maximum CPU threads for this run")
         item.add_argument("--data-workers", type=int)
         item.add_argument("--prefetch", type=int)
         item.add_argument("--seed", type=int)
@@ -147,7 +149,13 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--batch-size", type=int)
     create.add_argument("--accept-batch-risk", action="store_true")
     create.add_argument("--max-steps", type=int, default=1400)
-    create.add_argument("--profile", default="auto")
+    create.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
+    create.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], default="balanced")
+    create.add_argument("--cpu", type=int)
+    create.add_argument("--ram", type=int)
+    create.add_argument("--gpu", type=int)
+    create.add_argument("--threads", type=int)
+    create.add_argument("--profile", default="auto", help=argparse.SUPPRESS)
     create.add_argument("--seed", type=int, default=42)
     create.add_argument("--start", action="store_true")
     for name in ("start", "pause", "resume", "stop", "show", "get", "watch", "logs", "trace", "export"):
@@ -295,7 +303,7 @@ def _wait_for_status(client: DaemonClient, run_id: str, expected: set[str], time
 def _doctor(root: Path) -> dict[str, Any]:
     from .backends.registry import BackendRegistry
     from .capabilities import CapabilityRegistry
-    from .hardware import detect_hardware, recommend_profile
+    from .hardware import detect_hardware
     from .ingestion.registry import IngestorRegistry
 
     hardware = detect_hardware()
@@ -343,7 +351,7 @@ def _doctor(root: Path) -> dict[str, Any]:
             "guarantee": "Windows x64 tested matrix only; every device cannot be guaranteed",
         },
         "warnings": warnings,
-        "recommended_profile": recommend_profile(hardware),
+        "default_execution": "hybrid" if hardware["gpu_available"] else "cpu",
         "hardware": hardware,
         "optional_dependencies": capabilities["optional_dependencies"],
     }
@@ -386,31 +394,29 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .format_intelligence import advise_path
 
         return True, advise_path(args.path)
-    if args.command == "modes":
-        from .hardware import EXECUTION_MODES, detect_hardware, execution_policy, recommend_profile
+    if args.command == "execution":
+        from .hardware import ALGORITHM_PACKS, detect_hardware
 
         hardware = detect_hardware()
-        recommended = recommend_profile(hardware)
-        policy = execution_policy(recommended, hardware)
         return True, {
-            "recommended_profile": recommended,
-            "recommended_mode": policy["mode"],
+            "default_execution": "hybrid" if hardware["gpu_available"] else "cpu",
+            "execution_targets": {
+                "cpu": "CPU only; never reserves an accelerator",
+                "hybrid": "CPU plus a detected accelerator through an available optional backend",
+            },
             "gpu_available": bool(hardware["gpu_available"]),
             "accelerators": [*hardware["nvidia_gpus"], *hardware["accelerators"]],
-            "modes": {
+            "algorithm_packs": {
                 name: {
-                    "label": item["label"],
                     "data_workers": item["data_workers"],
                     "prefetch": item["prefetch"],
                     "stream_limit_mb": None if item["stream_limit"] >= 2**60 else item["stream_limit"] // 1024**2,
-                    "cpu_backends": list(item["cpu_backends"]),
-                    "gpu_backends": list(item["gpu_backends"]),
                     "native_thread_fraction": item["native_thread_fraction"],
                     "bulk_step_cap": item["bulk_step_cap"],
                     "arena_mb": item["arena_bytes"] // 1024**2,
-                    "strategy": item["strategy"],
+                    "chunk_target_records": item["chunk_target_records"],
                 }
-                for name, item in EXECUTION_MODES.items()
+                for name, item in ALGORITHM_PACKS.items()
             },
         }
     if args.command == "tune":
@@ -418,12 +424,14 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .tuning import autotune_execution
 
         return True, autotune_execution(
-            args.profile,
+            args.profile or args.algorithm_pack,
             detect_hardware(),
             records=args.records,
             features=args.features,
             batch_size=args.batch_size,
             streaming=args.streaming,
+            execution_target=args.execution,
+            algorithm_pack=args.algorithm_pack,
         )
     if args.command == "chunk-plan":
         from .planning import ContextChunkPlanner
@@ -467,8 +475,8 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .auto import AutoTrainer
 
         names = (
-            "target", "task", "backend", "architecture", "model_format", "profile", "batch_size", "max_steps", "target_metric",
-            "learning_rate", "weight_decay", "hidden_layers", "precision", "cpu", "ram", "gpu",
+            "target", "task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "batch_size", "max_steps", "target_metric",
+            "learning_rate", "weight_decay", "hidden_layers", "precision", "cpu", "ram", "gpu", "threads",
             "data_workers", "prefetch", "seed", "evaluation_interval", "min_improvement",
             "degradation_margin", "degradation_patience", "early_stopping_patience",
             "target_patience", "accept_batch_risk", "name",
@@ -618,6 +626,12 @@ def _main(args: argparse.Namespace) -> int:
                     accept_batch_risk=args.accept_batch_risk,
                     max_steps=args.max_steps,
                     profile=args.profile,
+                    execution=args.execution,
+                    algorithm_pack=args.algorithm_pack,
+                    cpu=args.cpu,
+                    ram=args.ram,
+                    gpu=args.gpu,
+                    threads=args.threads,
                     seed=args.seed,
                 )
             )

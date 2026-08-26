@@ -39,7 +39,7 @@ from .models import DatasetInfo, RunConfig, RunInfo
 from .security import LOOPBACK_HOSTS, ensure_agent_secret, ensure_user_secret, validate_daemon_bind
 from .workspace import Workspace, batch_plan_for
 
-VERSION = "0.5.0a1"
+VERSION = "0.5.0a2"
 
 
 class BatchPlanRequest(BaseModel):
@@ -59,6 +59,8 @@ class RunRequest(BaseModel):
     model_format: str = "auto"
     mode: str = "Новая модель"
     profile: str = "auto"
+    execution: str = "auto"
+    algorithm_pack: str = "balanced"
     priority: str = "normal"
     target_score: float = .92
     batch_mode: str = "auto"
@@ -68,6 +70,7 @@ class RunRequest(BaseModel):
     cpu: int | None = None
     ram: int | None = None
     gpu: int | None = None
+    threads: int | None = Field(default=None, ge=1)
     base_run_id: str | None = None
     model_path: str | None = None
     seed: int = 42
@@ -75,8 +78,8 @@ class RunRequest(BaseModel):
     weight_decay: float = 0.0
     hidden_layers: tuple[int, ...] = ()
     precision: str = "auto"
-    data_workers: int = 0
-    prefetch: int = 1
+    data_workers: int | None = None
+    prefetch: int | None = None
     evaluation_interval: int | None = Field(default=None, ge=1, le=1_000_000)
     min_improvement: float = Field(default=.0005, ge=0, le=1)
     degradation_margin: float | None = Field(default=None, gt=0, le=10)
@@ -479,6 +482,8 @@ def create_app(
                 name=body.name,
                 mode=body.mode,
                 profile=body.profile,
+                execution=body.execution,
+                algorithm_pack=body.algorithm_pack,
                 priority=body.priority,
                 target_metric=body.target_score,
                 batch_mode=body.batch_mode,
@@ -488,6 +493,7 @@ def create_app(
                 cpu=body.cpu,
                 ram=body.ram,
                 gpu=body.gpu,
+                threads=body.threads,
                 base_run_id=body.base_run_id,
                 model_path=body.model_path,
                 seed=body.seed,

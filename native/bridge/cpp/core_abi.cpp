@@ -626,6 +626,17 @@ float sigmoid(float value) {
   return 1.0F / (1.0F + std::exp(-value));
 }
 
+double binary_cross_entropy(float target, float probability) {
+  const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
+  // The public binary datasets carry 0/1 labels.  Avoid calculating the
+  // unused logarithm in that common case, while preserving soft-label
+  // semantics for callers that deliberately provide fractional targets.
+  if (target == 0.0F) return -std::log(1.0F - bounded);
+  if (target == 1.0F) return -std::log(bounded);
+  return -static_cast<double>(target) * std::log(bounded) -
+         static_cast<double>(1.0F - target) * std::log(1.0F - bounded);
+}
+
 float dot_scalar(const float* row, const float* weights, size_t features) {
   float sum = 0.0F;
 #if defined(__GNUC__) || defined(__clang__)
@@ -813,9 +824,7 @@ int train_binary_parallel(
       const float* row = x + static_cast<size_t>(row_index) * features;
       const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
       const float error = probability - y[row_index];
-      const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
-      total_loss -= static_cast<double>(y[row_index]) * std::log(bounded) +
-                    static_cast<double>(1.0F - y[row_index]) * std::log(1.0F - bounded);
+      total_loss += binary_cross_entropy(y[row_index], probability);
       bias_gradient += error;
       add_scaled(gradient, row, error, features);
     }
@@ -919,15 +928,11 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
     return train_binary_parallel(model, x, y, rows, loss);
   }
 #endif
-#if KR_HAS_FORTRAN_NUMERIC
-  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
-    model.errors.resize(rows);
-    kr_fortran_binary_train_f32(
-        x, y, rows, features, model.weights.data(), model.bias.data(), model.config.learning_rate,
-        model.config.weight_decay, model.errors.data(), model.gradient.data(), loss);
-    return std::isfinite(*loss) ? 1 : fail("Fortran binary loss became non-finite");
-  }
-#endif
+  // The binary path keeps prediction and gradient accumulation in this AVX2
+  // translation unit.  Calling the Fortran row kernel once per example adds a
+  // function boundary to every dot product and is measurably slower on small
+  // and medium tabular matrices.  Fortran remains active for regression and
+  // numeric primitives; this branch is selected for locality, not semantics.
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
@@ -935,9 +940,7 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
     const float* row = x + row_index * features;
     const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
     const float error = probability - y[row_index];
-    const float bounded = std::clamp(probability, 1.0e-7F, 1.0F - 1.0e-7F);
-    total_loss -= static_cast<double>(y[row_index]) * std::log(bounded) +
-                  static_cast<double>(1.0F - y[row_index]) * std::log(1.0F - bounded);
+    total_loss += binary_cross_entropy(y[row_index], probability);
     bias_gradient += error;
     add_scaled(model.gradient.data(), row, error, features);
   }
