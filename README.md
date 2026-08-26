@@ -55,9 +55,11 @@ universal performance claims.
   Parquet input.
 - Bundled native and NumPy backends; optional PyTorch and TensorFlow/Keras
   backends when installed.
-- Automatic resource plan, four execution programs (weak PC, balanced PC,
-  powerful PC, workstation), checkpoints, resume, held-out evaluation, and
-  best-checkpoint restoration.
+- Explicit `cpu` or `hybrid` execution, developer-set CPU/RAM/GPU/thread
+  limits, and four optional algorithm packs (`careful`, `balanced`,
+  `throughput`, `maximum`). Packs alter bounded chunk/prefetch/working-set
+  defaults; they do not classify the user's PC. Checkpoints, resume,
+  held-out evaluation, and best-checkpoint restoration are included.
 - Data Doctor: bounded preflight findings, a signed dataset contract, a
   deterministic split recommendation, and a variable-range chunk plan.
 - Model Guard V2: finite-metric checks plus saved score-trend evidence in the
@@ -92,8 +94,8 @@ TensorFlow/Keras.
 
 ```powershell
 python -m kernelyra doctor
-python -m kernelyra plan .\data\train.csv --target label
-python -m kernelyra train .\data\train.csv --target label
+python -m kernelyra execution
+python -m kernelyra plan .\data\train.csv --target label --execution cpu --pack throughput --cpu 100 --ram 85 --threads 12
 ```
 
 Before training, inspect bounded data-health evidence explicitly when useful:
@@ -121,6 +123,7 @@ For PowerShell command names, import the bundled module from a checkout:
 Import-Module .\powershell\Kernelyra.psd1 -Force
 Test-KernelyraDataset .\data\train.csv -Target label
 Get-KernelyraPlan .\data\train.csv -Target label
+Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack throughput -Cpu 100 -Ram 85 -Threads 12
 ```
 
 <a id="limits"></a>
@@ -131,6 +134,8 @@ The tested release target is **Windows x64 with Python 3.11–3.13**. Kernelyra
 0.5 trains tabular models only. It does not include built-in trainers for LLMs,
 images, audio, video, 3D, or other modalities. Recognizing an extension is not
 the same as extracting it, training it, or supporting it as a model container.
+`hybrid` requires a detected accelerator and an installed compatible optional
+backend; it is not a promise that the bundled native backend trains on every GPU.
 
 The V3 workflow benchmark is a local preflight/planning measurement, not a
 comparison or a universal performance claim. Its exact input and environment

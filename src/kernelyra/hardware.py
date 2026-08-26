@@ -96,17 +96,12 @@ def detect_hardware() -> dict[str, Any]:
 
 
 def recommend_profile(hardware: dict[str, Any]) -> str:
-    threads = int(hardware.get("cpu_threads") or 1)
-    ram = float(hardware.get("ram_gb") or 0)
-    gpu_vram = max(
-        (float(item.get("vram_gb", 0)) for item in hardware.get("nvidia_gpus", [])), default=0
-    )
-    if threads <= 6 or ram < 12:
-        return "low-memory"
-    if threads >= 32 and ram >= 64 and (gpu_vram >= 16 or (threads >= 64 and ram >= 128)):
-        return "workstation"
-    if threads >= 16 and ram >= 32 and gpu_vram >= 8:
-        return "performance"
+    """Compatibility value for stored pre-0.6 profiles.
+
+    New callers use an explicit execution target and algorithm pack.  Hardware
+    must not silently choose an aggressive policy merely because it looks
+    powerful, so the compatibility default is stable and conservative.
+    """
     return "balanced"
 
 
@@ -177,9 +172,8 @@ PROFILE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-# Four execution programs behind one library API.  Profiles such as ``eco``
-# remain accepted as compatibility aliases, but resolve to one of these four
-# runtime strategies rather than creating a fifth behavior.
+# Legacy execution programs remain only to read existing run records. New
+# public APIs use ALGORITHM_PACKS below and do not expose PC-strength labels.
 EXECUTION_MODES: dict[str, dict[str, Any]] = {
     "weak": {
         "label": "Weak PC",
@@ -232,22 +226,131 @@ EXECUTION_MODES: dict[str, dict[str, Any]] = {
 }
 
 
+ALGORITHM_PACKS: dict[str, dict[str, Any]] = {
+    "careful": {
+        "label": "Careful stream",
+        "data_workers": 0,
+        "prefetch": 1,
+        "stream_limit": 128 * 1024 * 1024,
+        "native_thread_fraction": .35,
+        "bulk_step_cap": 8,
+        "arena_bytes": 32 * 1024 * 1024,
+        "chunk_target_records": 1024,
+        "hidden_layers": (32, 16),
+        "strategy": "small variable contiguous chunks with conservative memory reuse",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+    "balanced": {
+        "label": "Balanced stream",
+        "data_workers": 2,
+        "prefetch": 2,
+        "stream_limit": 256 * 1024 * 1024,
+        "native_thread_fraction": .60,
+        "bulk_step_cap": 32,
+        "arena_bytes": 96 * 1024 * 1024,
+        "chunk_target_records": 4096,
+        "hidden_layers": (64, 32),
+        "strategy": "variable chunks and bounded parallel prefetch",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+    "throughput": {
+        "label": "Throughput stream",
+        "data_workers": 6,
+        "prefetch": 4,
+        "stream_limit": 384 * 1024 * 1024,
+        "native_thread_fraction": .85,
+        "bulk_step_cap": 100,
+        "arena_bytes": 256 * 1024 * 1024,
+        "chunk_target_records": 16384,
+        "hidden_layers": (128, 64, 32),
+        "strategy": "larger variable chunks with parallel prefetch and bulk dispatch",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+    "maximum": {
+        "label": "Maximum local throughput",
+        "data_workers": 12,
+        "prefetch": 8,
+        "stream_limit": 2**63 - 1,
+        "native_thread_fraction": 1.0,
+        "bulk_step_cap": 100,
+        "arena_bytes": 768 * 1024 * 1024,
+        "chunk_target_records": 65536,
+        "hidden_layers": (256, 128, 64),
+        "strategy": "large variable chunks and maximum local parallel dispatch within explicit limits",
+        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
+    },
+}
+
+_LEGACY_PROFILE_PACK = {
+    "auto": "balanced",
+    "eco": "careful",
+    "low-memory": "careful",
+    "balanced": "balanced",
+    "performance": "throughput",
+    "workstation": "maximum",
+    "custom": "balanced",
+}
+_PACK_PROFILE = {
+    "careful": "low-memory",
+    "balanced": "balanced",
+    "throughput": "performance",
+    "maximum": "workstation",
+}
+
+
+def resolve_algorithm_pack(value: str | None) -> str:
+    """Validate a public pack name or map a stored legacy profile."""
+    selected = str(value or "balanced").strip().lower()
+    if selected in ALGORITHM_PACKS:
+        return selected
+    if selected in _LEGACY_PROFILE_PACK:
+        return _LEGACY_PROFILE_PACK[selected]
+    raise KeyError(f"Unknown algorithm pack: {value}")
+
+
+def legacy_profile_for_pack(pack: str) -> str:
+    """Return the hidden compatibility profile required by existing backends."""
+    return _PACK_PROFILE[resolve_algorithm_pack(pack)]
+
+
+def resolve_execution_target(value: str | None, hardware: dict[str, Any]) -> str:
+    """Resolve CPU-only or CPU+GPU execution without guessing a device class."""
+    target = str(value or "auto").strip().lower()
+    if target == "auto":
+        return "hybrid" if bool(hardware.get("gpu_available")) else "cpu"
+    if target not in {"cpu", "hybrid"}:
+        raise KeyError("execution must be cpu, hybrid, or auto")
+    if target == "hybrid" and not bool(hardware.get("gpu_available")):
+        raise KeyError("hybrid execution requires a detected accelerator; use cpu or configure KERNELYRA_ACCELERATOR")
+    return target
+
+
 def execution_mode(profile: str) -> str:
-    """Map public profiles and legacy aliases to one of four engine programs."""
-    preset = PROFILE_PRESETS.get(profile)
-    if preset is None:
-        raise KeyError(f"Unknown hardware profile: {profile}")
-    return str(preset["execution_mode"])
+    """Compatibility alias for code that still asks for a legacy mode."""
+    return resolve_algorithm_pack(profile)
 
 
-def execution_policy(profile: str, hardware: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of the selected program with CPU/GPU backend priority."""
-    mode = execution_mode(profile)
-    policy = dict(EXECUTION_MODES[mode])
-    # NVIDIA is detected without importing heavy ML runtimes. Other accelerators
-    # are still usable when a user explicitly selects torch/tensorflow; their
-    # framework performs final device discovery inside the isolated worker.
-    has_detected_gpu = bool(hardware.get("gpu_available") or hardware.get("nvidia_gpus"))
-    policy["mode"] = mode
-    policy["backend_order"] = policy["gpu_backends"] if has_detected_gpu else policy["cpu_backends"]
+def execution_policy(
+    profile: str | None,
+    hardware: dict[str, Any],
+    *,
+    execution_target: str | None = "auto",
+    algorithm_pack: str | None = None,
+) -> dict[str, Any]:
+    """Return an explicit CPU or hybrid policy plus a named algorithm pack.
+
+    ``profile`` remains accepted only for persisted runs and older SDK calls.
+    It never appears in the modern CLI help or PowerShell surface.
+    """
+    pack = resolve_algorithm_pack(algorithm_pack or profile)
+    target = resolve_execution_target(execution_target, hardware)
+    policy = dict(ALGORITHM_PACKS[pack])
+    policy["mode"] = pack
+    policy["algorithm_pack"] = pack
+    policy["execution"] = target
+    policy["backend_order"] = policy["hybrid_backends"] if target == "hybrid" else policy["cpu_backends"]
     return policy

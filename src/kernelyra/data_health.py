@@ -107,16 +107,24 @@ def _split_policy(columns: list[str], task: str | None, *, target: str | None, r
     }
 
 
-def recommend_chunk_policy(records: int, features: int, *, seed: int = 42) -> dict[str, Any]:
+def recommend_chunk_policy(
+    records: int,
+    features: int,
+    *,
+    seed: int = 42,
+    target_records: int | None = None,
+) -> dict[str, Any]:
     """Return a variable, contiguous chunk plan without materialising dataset rows."""
     records = max(0, int(records))
     features = max(1, int(features))
-    target = max(512, min(16_384, 2 ** max(9, min(14, int(math.log2(max(2, 1_048_576 // features)))))))
+    automatic_target = max(512, min(16_384, 2 ** max(9, min(14, int(math.log2(max(2, 1_048_576 // features)))))))
+    target = automatic_target if target_records is None else max(128, min(262_144, int(target_records)))
     planner = ContextChunkPlanner(target_records=target, seed=seed)
     summary = planner.summary(records, preview=6)
     return {
         "strategy": "adaptive_contiguous_ranges",
         "reason": "Variable ranges reduce synchronized allocation spikes while preserving input order.",
+        "target_records": target,
         "seed": int(seed),
         **summary,
     }
@@ -129,6 +137,7 @@ def analyze_inspection(
     records_estimate: int | None = None,
     feature_count: int | None = None,
     seed: int = 42,
+    chunk_target_records: int | None = None,
 ) -> dict[str, Any]:
     """Analyze one bounded router inspection and return JSON-safe diagnostics."""
     all_columns = [str(column) for column in inspection.get("columns") or [] if _text(column)]
@@ -255,7 +264,12 @@ def analyze_inspection(
     estimated_records = int(records_estimate or inspection.get("rows") or inspection.get("sampled_rows") or len(sampled))
     estimated_features = int(feature_count or max(1, len(all_columns) - (1 if selected_target else 0)))
     split_policy = _split_policy(all_columns, task, target=selected_target, row_count=estimated_records)
-    chunk_policy = recommend_chunk_policy(estimated_records, estimated_features, seed=seed)
+    chunk_policy = recommend_chunk_policy(
+        estimated_records,
+        estimated_features,
+        seed=seed,
+        target_records=chunk_target_records,
+    )
     warnings = [item["message"] for item in findings if item["severity"] in {"warning", "error"}]
     source = {
         "path": str(inspection.get("path") or ""),

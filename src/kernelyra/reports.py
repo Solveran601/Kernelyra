@@ -39,8 +39,9 @@ def build_experiment_report(workspace: Workspace, run_id: str) -> dict[str, Any]
         "reproduce": {
             "command": (
                 f'kernelyra --workspace "{workspace.root}" train "{dataset.path}" '
-                f'--target "{dataset.target}" --backend {run.backend} --profile {run.profile} '
-                f"--seed {run.seed} --max-steps {run.max_steps}"
+                f'--target "{dataset.target}" --backend {run.backend} --execution {run.execution} '
+                f"--pack {run.algorithm_pack} --cpu {run.cpu} --ram {run.ram} --gpu {run.gpu} "
+                f"--threads {run.threads} --seed {run.seed} --max-steps {run.max_steps}"
             ),
             "dataset_sha256": dataset.sha256,
             "run_id": run.id,

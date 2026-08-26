@@ -16,6 +16,9 @@
         'Resume-KernelyraRun',
         'Export-KernelyraModel',
         'Get-KernelyraReport'
+        'Get-KernelyraExecution',
+        'Get-KernelyraChunkPlan',
+        'Invoke-Kernelyra'
     )
     CmdletsToExport = @()
     VariablesToExport = @()

@@ -1,7 +1,15 @@
-"""Train a large CSV under a low-memory profile; mode is selected automatically."""
+"""Train a large CSV with explicit CPU limits and a careful data pack."""
 from kernelyra import Config, Engine
 
-settings = Config().target("label").low_memory().data(workers=2, prefetch=1).steps(20_000)
+settings = (
+    Config()
+    .target("label")
+    .cpu_only()
+    .pack("careful")
+    .resources(cpu=50, ram=45, threads=2)
+    .data(workers=2, prefetch=1)
+    .steps(20_000)
+)
 with Engine(".kernelyra-stream") as engine:
     result = engine.fit("data/large_train.csv", settings=settings)
 print({"data_mode": result.plan.data_mode, "checkpoint": result.checkpoint})

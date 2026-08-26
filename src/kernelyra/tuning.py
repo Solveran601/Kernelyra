@@ -1,10 +1,10 @@
-"""Deterministic startup tuning for the four Kernelyra execution programs."""
+"""Deterministic startup tuning for explicit execution and algorithm packs."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from .hardware import execution_policy, recommend_profile
+from .hardware import execution_policy, legacy_profile_for_pack, resolve_algorithm_pack, resolve_execution_target
 
 
 def autotune_execution(
@@ -15,6 +15,10 @@ def autotune_execution(
     features: int,
     batch_size: int,
     streaming: bool,
+    execution_target: str = "auto",
+    algorithm_pack: str | None = None,
+    threads: int | None = None,
+    cpu_percent: int = 100,
 ) -> dict[str, Any]:
     """Resolve a conservative, explainable execution plan before worker startup.
 
@@ -22,10 +26,17 @@ def autotune_execution(
     or changes model quality.  Runtime telemetry exposes the selected values so
     a future adaptive pass can be evaluated against real throughput data.
     """
-    selected_profile = recommend_profile(hardware) if profile == "auto" else profile
-    policy = execution_policy(selected_profile, hardware)
+    pack = resolve_algorithm_pack(algorithm_pack or profile)
+    selected_profile = legacy_profile_for_pack(pack)
+    execution = resolve_execution_target(execution_target, hardware)
+    policy = execution_policy(
+        selected_profile, hardware, execution_target=execution, algorithm_pack=pack
+    )
     cpu_threads = max(1, int(hardware.get("cpu_threads") or 1))
-    native_threads = max(1, min(cpu_threads, round(cpu_threads * float(policy["native_thread_fraction"]))))
+    native_threads = threads if threads is not None else round(
+        cpu_threads * (max(10, min(100, int(cpu_percent))) / 100) * float(policy["native_thread_fraction"])
+    )
+    native_threads = max(1, min(cpu_threads, int(native_threads)))
     batch_bytes = max(1, int(batch_size)) * max(1, int(features) + 1) * 4
     arena_cap = int(policy["arena_bytes"])
     # Reserve a profile-specific reusable working set.  The cap remains hard,
@@ -34,8 +45,10 @@ def autotune_execution(
     minimum_arena = max(8 * 1024**2, batch_bytes * 3)
     arena_bytes = min(arena_cap, max(minimum_arena, batch_bytes * 8, arena_cap // 4))
     return {
-        "mode": policy["mode"],
+        "mode": pack,
         "profile": selected_profile,
+        "execution": execution,
+        "algorithm_pack": pack,
         "native_threads": native_threads,
         "bulk_step_cap": int(policy["bulk_step_cap"]),
         "arena_bytes": arena_bytes,

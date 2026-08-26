@@ -12,7 +12,12 @@ from .architectures import resolve_training_contract
 from .batch import plan_batch
 from .data_health import analyze_inspection
 from .errors import ConfigurationError, DatasetError, RunError
-from .hardware import PROFILE_PRESETS, execution_policy, recommend_profile
+from .hardware import (
+    execution_policy,
+    legacy_profile_for_pack,
+    resolve_algorithm_pack,
+    resolve_execution_target,
+)
 from .models import DatasetInfo, RunConfig, RunInfo, RunStatus, TaskType
 from .workspace import Workspace
 
@@ -30,12 +35,15 @@ _ENV_KEYS = {
     "architecture": "KERNELYRA_ARCHITECTURE",
     "model_format": "KERNELYRA_MODEL_FORMAT",
     "profile": "KERNELYRA_PROFILE",
+    "execution": "KERNELYRA_EXECUTION",
+    "algorithm_pack": "KERNELYRA_ALGORITHM_PACK",
     "batch_size": "KERNELYRA_BATCH_SIZE",
     "max_steps": "KERNELYRA_MAX_STEPS",
     "target_metric": "KERNELYRA_TARGET_METRIC",
     "cpu": "KERNELYRA_CPU_PERCENT",
     "ram": "KERNELYRA_RAM_PERCENT",
     "gpu": "KERNELYRA_GPU_PERCENT",
+    "threads": "KERNELYRA_THREADS",
     "seed": "KERNELYRA_SEED",
     "learning_rate": "KERNELYRA_LEARNING_RATE",
     "weight_decay": "KERNELYRA_WEIGHT_DECAY",
@@ -58,12 +66,15 @@ _DEFAULTS: dict[str, Any] = {
     "architecture": "auto",
     "model_format": "auto",
     "profile": "auto",
+    "execution": "auto",
+    "algorithm_pack": "balanced",
     "batch_size": None,
     "max_steps": 1400,
     "target_metric": None,
     "cpu": None,
     "ram": None,
     "gpu": None,
+    "threads": None,
     "seed": 42,
     "learning_rate": None,
     "weight_decay": 0.0,
@@ -80,14 +91,14 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 _INTEGER_FIELDS = {
-    "batch_size", "max_steps", "cpu", "ram", "gpu", "seed", "data_workers", "prefetch",
+    "batch_size", "max_steps", "cpu", "ram", "gpu", "threads", "seed", "data_workers", "prefetch",
     "evaluation_interval", "degradation_patience", "early_stopping_patience", "target_patience",
 }
 _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvement", "degradation_margin"}
 
 
-def _stream_limit(profile: str, maximum: int) -> int:
-    return min(maximum, int(execution_policy(profile, {})["stream_limit"]))
+def _stream_limit(policy: Mapping[str, Any], maximum: int) -> int:
+    return min(maximum, int(policy["stream_limit"]))
 
 
 def _estimate_text_records(source: Path, size: int, sampled: int, preview_bytes: int, preview_count: int) -> int:
@@ -132,7 +143,7 @@ def _coerce(name: str, value: Any) -> Any:
         if any(item < 1 or item > 65_536 for item in result):
             raise ConfigurationError("hidden_layers values must be between 1 and 65536")
         return result
-    if name in {"task", "backend", "architecture", "model_format", "profile", "precision"}:
+    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision"}:
         return str(value).strip().lower()
     return str(value)
 
@@ -159,6 +170,8 @@ class TrainingPlan:
     architecture: str
     model_format: str
     profile: str
+    execution: str
+    algorithm_pack: str
     execution_mode: str
     batch_size: int
     max_steps: int
@@ -166,6 +179,7 @@ class TrainingPlan:
     cpu: int
     ram: int
     gpu: int
+    threads: int
     seed: int
     learning_rate: float | None
     weight_decay: float
@@ -322,30 +336,44 @@ class AutoTrainer:
             task = str(inspected_tasks[0]) if len(inspected_tasks) == 1 else self._task_from_inspection(inspection, target)
         if task not in {item.value for item in TaskType}:
             raise ConfigurationError(f"Unknown task '{task}'")
-        profile = resolved.values["profile"]
-        if profile == "auto":
-            profile = recommend_profile(self.workspace.hardware)
-        if profile not in PROFILE_PRESETS:
-            raise ConfigurationError(f"Unknown hardware profile '{profile}'")
-        preset = PROFILE_PRESETS[profile]
-        policy = execution_policy(profile, self.workspace.hardware)
+        try:
+            # ``profile`` remains accepted only to migrate old configuration;
+            # new code names an algorithm pack and an execution target.
+            selected_pack = resolve_algorithm_pack(
+                resolved.values["algorithm_pack"] if resolved.values["profile"] == "auto" else resolved.values["profile"]
+            )
+            execution = resolve_execution_target(resolved.values["execution"], self.workspace.hardware)
+        except KeyError as error:
+            raise ConfigurationError(str(error)) from None
+        profile = legacy_profile_for_pack(selected_pack)
+        policy = execution_policy(
+            profile,
+            self.workspace.hardware,
+            execution_target=execution,
+            algorithm_pack=selected_pack,
+        )
         backend = self._select_backend(resolved.values["backend"], task, policy)
         architecture, model_format = resolve_training_contract(
             resolved.values["architecture"], resolved.values["model_format"], backend, task
         )
-        cpu = int(resolved.values["cpu"] if resolved.values["cpu"] is not None else preset["cpu"])
-        ram = int(resolved.values["ram"] if resolved.values["ram"] is not None else preset["ram"])
-        gpu = int(
-            resolved.values["gpu"]
-            if resolved.values["gpu"] is not None
-            else preset["gpu"] if self.workspace.hardware["gpu_available"] else 0
-        )
+        cpu = int(resolved.values["cpu"] if resolved.values["cpu"] is not None else 70)
+        ram = int(resolved.values["ram"] if resolved.values["ram"] is not None else 70)
+        gpu = int(resolved.values["gpu"] if resolved.values["gpu"] is not None else (70 if execution == "hybrid" else 0))
         if not 10 <= cpu <= 100:
             raise ConfigurationError("cpu must be between 10 and 100 percent")
         if not 10 <= ram <= 95:
             raise ConfigurationError("ram must be between 10 and 95 percent")
         if not 0 <= gpu <= 100:
             raise ConfigurationError("gpu must be between 0 and 100 percent")
+        if execution == "cpu" and gpu:
+            raise ConfigurationError("CPU execution cannot reserve GPU; choose execution='hybrid' to use an accelerator")
+        cpu_threads = max(1, int(self.workspace.hardware.get("cpu_threads") or 1))
+        threads = resolved.values["threads"]
+        if threads is None:
+            threads = max(1, min(cpu_threads, round(cpu_threads * (cpu / 100) * float(policy["native_thread_fraction"]))))
+        threads = int(threads)
+        if not 1 <= threads <= cpu_threads:
+            raise ConfigurationError(f"threads must be between 1 and detected CPU thread count ({cpu_threads})")
         columns = inspection.get("columns") or []
         shape = inspection.get("shape") or []
         features = max(1, int(shape[1]) if len(shape) >= 2 else len(columns) - 1)
@@ -385,21 +413,14 @@ class AutoTrainer:
         if workers is None:
             workers = min(
                 int(policy["data_workers"]),
-                max(0, int(self.workspace.hardware["cpu_threads"]) // 2),
+                max(0, threads - 1),
             )
         prefetch = resolved.values["prefetch"]
         if prefetch is None:
             prefetch = int(policy["prefetch"])
         hidden = resolved.values["hidden_layers"]
         if hidden is None:
-            hidden = {
-                "eco": (16, 8),
-                "low-memory": (16, 8),
-                "balanced": (64, 32),
-                "custom": (64, 32),
-                "performance": (128, 64, 32),
-                "workstation": (256, 128, 64),
-            }[profile]
+            hidden = tuple(policy["hidden_layers"])
         hidden = tuple(int(width) for width in hidden)
         if not hidden or len(hidden) > 16 or any(not 1 <= width <= 1_000_000 for width in hidden):
             raise ConfigurationError("hidden_layers must contain 1-16 positive widths no larger than 1000000")
@@ -450,7 +471,7 @@ class AutoTrainer:
         # the source, decoded rows, encoded arrays and train/validation/test
         # buffers can coexist. Select the streaming path from the resolved
         # hardware profile instead of waiting for the import hard limit.
-        stream_limit = _stream_limit(profile, self.workspace.datasets.MAX_IMPORT_BYTES)
+        stream_limit = _stream_limit(policy, self.workspace.datasets.MAX_IMPORT_BYTES)
         data_mode = "stream" if source.is_dir() or size > stream_limit else "memory"
         if data_mode == "stream" and source.is_file() and source.suffix.lower() not in streaming_formats:
             raise DatasetError(
@@ -464,6 +485,7 @@ class AutoTrainer:
             records_estimate=records,
             feature_count=features,
             seed=int(resolved.values["seed"]),
+            chunk_target_records=int(policy["chunk_target_records"]),
         )
         data_contract = dict(data_health["contract"])
         split_policy = dict(data_contract["split_policy"])
@@ -481,13 +503,16 @@ class AutoTrainer:
             architecture=architecture,
             model_format=model_format,
             profile=profile,
-            execution_mode=str(policy["mode"]),
+            execution=execution,
+            algorithm_pack=selected_pack,
+            execution_mode=selected_pack,
             batch_size=batch.applied,
             max_steps=max_steps,
             target_metric=target_metric,
             cpu=cpu,
             ram=ram,
             gpu=gpu,
+            threads=threads,
             seed=int(resolved.values["seed"]),
             learning_rate=learning_rate,
             weight_decay=float(resolved.values["weight_decay"]),
@@ -529,7 +554,14 @@ class AutoTrainer:
             imported = self.workspace.datasets.import_file(plan.dataset, plan.target)
         task = plan.task if plan.task in imported.task_types else imported.task_types[0]
         backend = self._select_backend(
-            plan.backend, task, execution_policy(plan.profile, self.workspace.hardware)
+            plan.backend,
+            task,
+            execution_policy(
+                plan.profile,
+                self.workspace.hardware,
+                execution_target=plan.execution,
+                algorithm_pack=plan.algorithm_pack,
+            ),
         )
         imported_contract = imported.manifest.get("data_contract")
         if not isinstance(imported_contract, dict):
@@ -555,6 +587,8 @@ class AutoTrainer:
                 name=str(overrides.get("name") or Path(plan.dataset).stem)[:80],
                 mode="Fine-tune" if model else "Train",
                 profile=plan.profile,
+                execution=plan.execution,
+                algorithm_pack=plan.algorithm_pack,
                 target_metric=plan.target_metric,
                 batch_mode="manual" if overrides.get("batch_size") is not None else "auto",
                 batch_size=plan.batch_size,
@@ -562,6 +596,7 @@ class AutoTrainer:
                 cpu=plan.cpu,
                 ram=plan.ram,
                 gpu=plan.gpu,
+                threads=plan.threads,
                 model_path=str(Path(model).expanduser().resolve()) if model else None,
                 accept_batch_risk=True,
                 seed=plan.seed,

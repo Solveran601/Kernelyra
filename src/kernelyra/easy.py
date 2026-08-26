@@ -70,18 +70,36 @@ class TrainingConfig:
         return self.set(model_format=name)
 
     def profile(self, name: str) -> Self:
+        """Compatibility option for pre-0.6 configuration files."""
         return self.set(profile=name)
+
+    def execution(self, target: str) -> Self:
+        """Choose ``cpu`` or ``hybrid`` execution explicitly."""
+        return self.set(execution=target)
+
+    def cpu_only(self) -> Self:
+        return self.execution("cpu")
+
+    def hybrid(self) -> Self:
+        return self.execution("hybrid")
+
+    def pack(self, name: str) -> Self:
+        """Choose a recommendation pack without changing resource limits."""
+        return self.set(algorithm_pack=name)
 
     def hardware(
         self,
         profile: str = "auto",
         *,
+        execution: str = "auto",
+        pack: str = "balanced",
         cpu: int | None = None,
         ram: int | None = None,
         gpu: int | None = None,
+        threads: int | None = None,
     ) -> Self:
-        """Select an automatic/preset profile and optionally override its limits."""
-        return self.set(profile=profile, cpu=cpu, ram=ram, gpu=gpu)
+        """Set explicit execution/resources; ``profile`` is legacy compatibility."""
+        return self.set(profile=profile, execution=execution, algorithm_pack=pack, cpu=cpu, ram=ram, gpu=gpu, threads=threads)
 
     def low_memory(self) -> Self:
         return self.profile("low-memory")
@@ -121,8 +139,10 @@ class TrainingConfig:
             return self.unset("batch_size", "accept_batch_risk")
         return self.set(batch_size=size, accept_batch_risk=accept_risk)
 
-    def resources(self, *, cpu: int | None = None, ram: int | None = None, gpu: int | None = None) -> Self:
-        return self.set(cpu=cpu, ram=ram, gpu=gpu)
+    def resources(
+        self, *, cpu: int | None = None, ram: int | None = None, gpu: int | None = None, threads: int | None = None
+    ) -> Self:
+        return self.set(cpu=cpu, ram=ram, gpu=gpu, threads=threads)
 
     def optimizer(self, *, learning_rate: float | None = None, weight_decay: float | None = None) -> Self:
         return self.set(learning_rate=learning_rate, weight_decay=weight_decay)

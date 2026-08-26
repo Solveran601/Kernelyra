@@ -3,13 +3,17 @@
 target = "label"
 task = "auto"
 backend = "auto"
-profile = "auto"
+# Explicit execution target. `hybrid` requires a detected accelerator.
+execution = "cpu"
+# Recommendation only: it changes bounded data/memory defaults, not limits.
+algorithm_pack = "balanced"
 batch_size = 64
 max_steps = 5000
 target_metric = 0.93
 cpu = 60
 ram = 60
 gpu = 70
+threads = 8
 seed = 42
 learning_rate = 0.001
 weight_decay = 0.0001
