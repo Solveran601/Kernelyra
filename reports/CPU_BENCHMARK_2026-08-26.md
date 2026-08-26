@@ -8,9 +8,9 @@ framework superiority.
 
 | Item | Value |
 | --- | --- |
-| Host | Windows 11, Intel Core i5-1235U (10 physical / 12 logical cores) |
+| Host | Developer's MSI Modern 14 C12M laptop, Windows 11, Intel Core i5-1235U (10 physical / 12 logical cores) |
 | Python | 3.12.9 |
-| GPU | Disabled; no CUDA GPU is present on the host |
+| GPU | No discrete CUDA-capable GPU is available in the developer's current laptop; GPU matrix is not yet measured |
 | CPU cap | One thread for every runner (`KERNELYRA_BENCH_THREADS=1`) |
 | Data | 8,192 train rows + 2,048 independent hold-out rows; 64 float32 features |
 | Training | 30 full-data steps, learning rate 0.03, one unrecorded warm-up, three measured repetitions |

@@ -35,7 +35,7 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 
 | Same float32 full-batch logistic-regression task, CPU-only | Result |
 | --- | --- |
-| Machine and method | Intel Core i5-1235U; one shared CPU thread; 8,192 train + 2,048 held-out rows; median of 3 runs |
+| Machine and method | Developer's MSI Modern 14 C12M laptop; Intel Core i5-1235U; one shared CPU thread; 8,192 train + 2,048 held-out rows; median of 3 runs |
 | Quality | Kernelyra, NumPy, PyTorch, TensorFlow, JAX, and Flax/Optax: **96.09% hold-out accuracy** |
 | Kernelyra native | **14.67 ms** per 30-step run — 1.82× faster than PyTorch in this workload |
 | Current optimisation target | NumPy is **4.22× faster** than Kernelyra here; this is not hidden or presented as a win |
@@ -45,6 +45,10 @@ Flax/Optax, scikit-learn, River, XGBoost, LightGBM, and CatBoost. Tree and
 online learners use different algorithms, so they are reported without a false
 cross-family speed ranking. These CPU values are not GPU, LLM, image, or
 universal performance claims.
+
+Current development and this benchmark run on the developer's MSI Modern 14
+C12M laptop. It has no discrete CUDA-capable GPU, so Kernelyra has not yet
+published a GPU benchmark matrix.
 
 <a id="capabilities"></a>
 
