@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0a1 — 2026-08-25
+## 0.5.0a1 — 2026-08-26
 
 - Added Data Doctor: bounded sample findings, signed dataset contracts,
   deterministic split recommendations and variable-range chunk plans.
@@ -11,6 +11,9 @@
   `dataset doctor` / `report` CLI commands.
 - Added the bundled PowerShell module and a source-checked V3 workflow
   benchmark that records local measurements without universal speed claims.
+- Published a reproducible CPU matrix for Kernelyra plus ten ML libraries,
+  with an independent hold-out score, exact versions and a separate
+  non-comparable tree/online section.
 - Updated the public README files to state only tabular capabilities and
   tested Windows x64/Python 3.11–3.13 support.
 

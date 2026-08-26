@@ -6,7 +6,7 @@ recursive-include scripts *.py
 include scripts/install_benchmark_stack.ps1
 include scripts/install_powershell_module.ps1
 recursive-include powershell *.psm1 *.psd1
-recursive-include reports *.json
+recursive-include reports *.json *.md
 recursive-include assets/brand *.png *.svg
 recursive-include constraints *.txt
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90

@@ -14,6 +14,37 @@ Kernelyra **0.5.0a1 (V3 alpha)** — локальная библиотека д�
 моделей из терминала. Один и тот же путь планирования доступен в CLI, Python
 API, PowerShell-модуле и JSONL-протоколе для поставляемых SDK.
 
+<p align="center">
+  <a href="#capabilities">Возможности</a> ·
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md">CPU-бенчмарк</a> ·
+  <a href="#install">Установка</a> ·
+  <a href="#powershell">PowerShell</a> ·
+  <a href="#limits">Ограничения</a>
+</p>
+
+## CPU benchmark snapshot
+
+<p align="center">
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md">Методика и результаты</a> ·
+  <a href="reports/cpu-framework-matrix-2026-08-26.json">Исходный JSON</a> ·
+  <a href="reports/CPU_BENCHMARK_2026-08-26.md#reproduce">Повторить запуск</a>
+</p>
+
+| Одинаковая float32 full-batch logistic-regression задача, только CPU | Результат |
+| --- | --- |
+| Машина и метод | Intel Core i5-1235U; один общий CPU-поток; 8 192 train + 2 048 hold-out строк; медиана 3 запусков |
+| Качество | Kernelyra, NumPy, PyTorch, TensorFlow, JAX и Flax/Optax: **96.09% hold-out accuracy** |
+| Kernelyra native | **14.67 мс** на 30 шагов — в 1.82× быстрее PyTorch в этой задаче |
+| Текущая цель оптимизации | NumPy здесь **в 4.22× быстрее** Kernelyra; это не скрывается и не выдаётся за победу |
+
+Матрица измеряет Kernelyra плюс NumPy, PyTorch, TensorFlow, JAX, Flax/Optax,
+scikit-learn, River, XGBoost, LightGBM и CatBoost. Деревья и online-обучение
+используют другие алгоритмы, поэтому они приведены без ложного общего рейтинга
+скорости. Эти CPU-значения не являются заявлениями о GPU, LLM, изображениях или
+универсальной производительности.
+
+<a id="capabilities"></a>
+
 ## Что работает в этой alpha-версии
 
 - Бинарная и многоклассовая классификация, а также регрессия на табличных
@@ -37,6 +68,8 @@ Data Doctor намеренно ограничен выборкой: выводы
 порядок входных строк. Обнаруженная group/context колонка пока является только
 **предупреждением**: group-exclusive split в 0.5 ещё не реализован.
 
+<a id="install"></a>
+
 ## Установка из исходников
 
 Публикация на PyPI не настроена. После успешной сборки GitHub Actions для тега
@@ -50,6 +83,8 @@ python -m pip install -e .
 
 `.[data]` нужен для Parquet, `.[torch]` — для PyTorch, а `.[tensorflow]` — для
 TensorFlow/Keras.
+
+<a id="powershell"></a>
 
 ## Три команды PowerShell
 
@@ -86,6 +121,8 @@ Test-KernelyraDataset .\data\train.csv -Target label
 Get-KernelyraPlan .\data\train.csv -Target label
 ```
 
+<a id="limits"></a>
+
 ## Ограничения и граница roadmap
 
 Проверяемая цель релиза — **Windows x64 с Python 3.11–3.13**. Kernelyra 0.5
@@ -101,6 +138,9 @@ V3 workflow benchmark измеряет локальную предварител
 Отдельный CPU-only matched-linear запуск сохраняет фактические результаты
 Kernelyra, NumPy, PyTorch и JAX без ранжирования разных алгоритмов в
 [framework matrix](reports/v3-framework-cpu-2026-08-25.json).
+Более новая [CPU-матрица](reports/CPU_BENCHMARK_2026-08-26.md) фиксирует
+Kernelyra и десять ML-библиотек на независимом hold-out наборе, оставляя
+деревья и online-обучение вне линейного сравнения скорости.
 
 ## Дополнительно
 
