@@ -10,6 +10,7 @@ from typing import Any
 
 from .architectures import resolve_training_contract
 from .batch import plan_batch
+from .checkpoints import resolve_checkpoint_policy
 from .data_health import analyze_inspection, estimate_records
 from .errors import ConfigurationError, DatasetError, RunError
 from .hardware import (
@@ -58,6 +59,9 @@ _ENV_KEYS = {
     "degradation_patience": "KERNELYRA_DEGRADATION_PATIENCE",
     "early_stopping_patience": "KERNELYRA_EARLY_STOPPING_PATIENCE",
     "target_patience": "KERNELYRA_TARGET_PATIENCE",
+    "checkpoint_resume": "KERNELYRA_CHECKPOINT_RESUME",
+    "checkpoint_final": "KERNELYRA_CHECKPOINT_FINAL",
+    "checkpoint_rollback": "KERNELYRA_CHECKPOINT_ROLLBACK",
 }
 
 _DEFAULTS: dict[str, Any] = {
@@ -90,6 +94,9 @@ _DEFAULTS: dict[str, Any] = {
     "degradation_patience": 3,
     "early_stopping_patience": 18,
     "target_patience": 3,
+    "checkpoint_resume": "last",
+    "checkpoint_final": "best",
+    "checkpoint_rollback": "best",
 }
 
 _INTEGER_FIELDS = {
@@ -121,7 +128,7 @@ def _coerce(name: str, value: Any) -> Any:
         if any(item < 1 or item > 65_536 for item in result):
             raise ConfigurationError("hidden_layers values must be between 1 and 65536")
         return result
-    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision", "data_mode"}:
+    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision", "data_mode", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback"}:
         return str(value).strip().lower()
     return str(value)
 
@@ -171,6 +178,7 @@ class TrainingPlan:
     degradation_patience: int
     early_stopping_patience: int
     target_patience: int
+    checkpoint_policy: dict[str, str]
     records_estimate: int
     features_estimate: int
     size_bytes: int
@@ -434,6 +442,16 @@ class AutoTrainer:
             raise ConfigurationError("early_stopping_patience must be between 1 and 10000")
         if not 1 <= target_patience <= 100:
             raise ConfigurationError("target_patience must be between 1 and 100")
+        try:
+            checkpoint_policy = resolve_checkpoint_policy(
+                {
+                    "resume": resolved.values["checkpoint_resume"],
+                    "final": resolved.values["checkpoint_final"],
+                    "rollback": resolved.values["checkpoint_rollback"],
+                }
+            )
+        except RunError as error:
+            raise ConfigurationError(str(error)) from None
         warnings = list(batch.warnings)
         streaming_formats = {".csv", ".tsv", ".jsonl", ".ndjson", ".parquet", ".pq"}
         # Text tables expand substantially when parsed into Python/NumPy values.
@@ -518,6 +536,7 @@ class AutoTrainer:
             degradation_patience=degradation_patience,
             early_stopping_patience=early_stopping_patience,
             target_patience=target_patience,
+            checkpoint_policy=checkpoint_policy,
             records_estimate=records,
             features_estimate=features,
             size_bytes=size,
@@ -604,6 +623,7 @@ class AutoTrainer:
                 degradation_patience=plan.degradation_patience,
                 early_stopping_patience=plan.early_stopping_patience,
                 target_patience=plan.target_patience,
+                checkpoint_policy=plan.checkpoint_policy,
                 data_contract=plan.data_contract,
                 split_policy=plan.split_policy,
                 chunk_policy=plan.chunk_policy,
@@ -623,7 +643,9 @@ class AutoTrainer:
             progress(current)
         if current.status in {RunStatus.ERROR.value, RunStatus.ERROR_RECOVERABLE.value}:
             raise RunError(current.message)
-        checkpoint = self.workspace.runtime.checkpoint_path(current.id)
+        checkpoint = self.workspace.runtime.checkpoint_path(
+            current.id, kind=plan.checkpoint_policy["final"]
+        )
         return TrainingResult(
             plan=plan,
             dataset=imported,

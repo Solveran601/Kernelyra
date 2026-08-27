@@ -223,6 +223,26 @@ class TrainingConfig:
         """Tune Model Guard sensitivity without disabling best-checkpoint protection."""
         return self.set(degradation_margin=margin, degradation_patience=patience)
 
+    def checkpoints(
+        self,
+        *,
+        resume: str | None = None,
+        final: str | None = None,
+        rollback: str | None = None,
+    ) -> Self:
+        """Choose durable checkpoint roles for a run.
+
+        ``resume`` and ``final`` accept ``"last"`` or ``"best"``.  Model
+        Guard always rolls back to ``"best"``; passing any other value is
+        rejected by the planner rather than risking a degraded model.
+        """
+        values = {
+            "checkpoint_resume": resume,
+            "checkpoint_final": final,
+            "checkpoint_rollback": rollback,
+        }
+        return self.set(**{key: value for key, value in values.items() if value is not None})
+
     def seed(self, value: int) -> Self:
         return self.set(seed=value)
 

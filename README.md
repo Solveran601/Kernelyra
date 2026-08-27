@@ -37,8 +37,9 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
   limits, four built-in algorithm packs (`careful`, `balanced`, `throughput`,
   `maximum`), and validated user packs cloned from them. Packs alter real
   thread, bulk-dispatch, chunk, prefetch, and arena tuning; they do not
-  classify the user's PC. Checkpoints, resume,
-  held-out evaluation, and best-checkpoint restoration are included.
+  classify the user's PC. Checkpoints resume from `last` by default; users can
+  choose `best` or `last` for the final evaluation, while Model Guard restores
+  only `best`.
 - Data Doctor: bounded preflight findings, a signed dataset contract, a
   deterministic split recommendation, and a variable-range chunk plan.
 - UTF-8 text preparation: native chunk planning when the native core is

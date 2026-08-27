@@ -194,12 +194,23 @@ workers: 0..64; prefetch: 0..32.
       target_patience=3,
   )
   config.guard(margin=0.03, patience=3)
+  config.checkpoints(
+      resume="last",   # last | best; "last" по умолчанию
+      final="best",    # best | last; checkpoint для итоговой проверки и результата
+      rollback="best", # единственный безопасный вариант для Model Guard
+  )
   config.seed(42)
 
 max_steps: 1..10_000_000. hidden_layers: 1..16 положительных ширин.
 precision: auto, float16, bfloat16, float32, float64. Ручной batch за
 безопасным диапазоном требует accept_risk=True. guard() не выключает Model
 Guard, а меняет его чувствительность.
+
+Checkpoint-политика разделяет три разные задачи: resume продолжает последний
+сохранённый шаг (и состояние оптимизатора для PyTorch/TensorFlow), final
+выбирает checkpoint для финальной held-out проверки и результата, rollback
+остаётся best. Нельзя переключить rollback на last: это намеренная защита от
+закрепления ухудшившейся модели.
 
 
 6. ENGINE И ВЕРХНЕУРОВНЕВЫЙ API
@@ -244,7 +255,8 @@ algorithm_pack, batch_size, accept_batch_risk, max_steps, target_metric,
 learning_rate, weight_decay, hidden_layers, precision, data_mode, cpu, ram,
 gpu, threads, data_workers, prefetch, seed, evaluation_interval,
 min_improvement, degradation_margin, degradation_patience,
-early_stopping_patience, target_patience, name.
+early_stopping_patience, target_patience, checkpoint_resume, checkpoint_final,
+checkpoint_rollback, name.
 
 task: auto | binary_classification | multiclass_classification | regression.
 backend: auto | native | numpy | torch | tensorflow.
@@ -267,7 +279,9 @@ precision: auto | float64 | float32 | float16 | bfloat16.
   KERNELYRA_DATA_WORKERS        KERNELYRA_PREFETCH
   KERNELYRA_EVALUATION_INTERVAL KERNELYRA_MIN_IMPROVEMENT
   KERNELYRA_DEGRADATION_MARGIN  KERNELYRA_DEGRADATION_PATIENCE
-  KERNELYRA_EARLY_STOPPING_PATIENCE
+  KERNELYRA_EARLY_STOPPING_PATIENCE KERNELYRA_TARGET_PATIENCE
+  KERNELYRA_CHECKPOINT_RESUME   KERNELYRA_CHECKPOINT_FINAL
+  KERNELYRA_CHECKPOINT_ROLLBACK
   KERNELYRA_TARGET_PATIENCE
 
 Пример kernelyra.toml:

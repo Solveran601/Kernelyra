@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from typing import Any
@@ -260,11 +261,15 @@ class TorchBackend:
             f"param::{name}": value.detach().cpu().numpy()
             for name, value in session.state["model"].state_dict().items()
         }
+        optimizer_buffer = io.BytesIO()
+        torch = session.state["torch"]
+        torch.save(session.state["optimizer"].state_dict(), optimizer_buffer)
         stream_state = session.data_source.state() if session.data_source is not None else {}
         payload = {
             **metadata,
             **stream_state,
             "task_type": session.state["task_type"],
+            "optimizer_state": np.frombuffer(optimizer_buffer.getvalue(), dtype=np.uint8),
             **parameters,
         }
         np.savez(pending, **payload)
@@ -284,5 +289,13 @@ class TorchBackend:
                     raise ValueError("Checkpoint model shape is incompatible with PyTorch backend")
                 restored[name] = torch.as_tensor(saved[key], dtype=value.dtype, device=session.state["device"])
             model.load_state_dict(restored, strict=True)
+            if "optimizer_state" in saved:
+                raw_optimizer_state = np.asarray(saved["optimizer_state"], dtype=np.uint8).tobytes()
+                optimizer_state = torch.load(
+                    io.BytesIO(raw_optimizer_state),
+                    map_location=session.state["device"],
+                    weights_only=True,
+                )
+                session.state["optimizer"].load_state_dict(optimizer_state)
             if session.data_source is not None and "stream_rows_consumed" in saved:
                 session.data_source.restore_rows(int(saved["stream_rows_consumed"]))

@@ -243,12 +243,21 @@ class TensorFlowBackend:
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(path.stem + ".pending.npz")
         values = {f"weight_{index}": value for index, value in enumerate(session.state["model"].get_weights())}
+        optimizer = session.state["optimizer"]
+        optimizer_variables = getattr(optimizer, "variables", ())
+        optimizer_variables = optimizer_variables() if callable(optimizer_variables) else optimizer_variables
+        optimizer_values = {
+            f"optimizer_{index}": variable.numpy()
+            for index, variable in enumerate(optimizer_variables)
+        }
         stream_state = session.data_source.state() if session.data_source is not None else {}
         payload = {
             **metadata,
             **stream_state,
             "task_type": session.state["task_type"],
+            "optimizer_count": len(optimizer_values),
             **values,
+            **optimizer_values,
         }
         np.savez(pending, **payload)
         for attempt in range(6):
@@ -272,5 +281,21 @@ class TensorFlowBackend:
             if any(left.shape != right.shape for left, right in zip(weights, model.get_weights(), strict=False)):
                 raise ValueError("Checkpoint model shape несовместим с текущим run")
             model.set_weights(weights)
+            if "optimizer_count" in saved:
+                optimizer = session.state["optimizer"]
+                expected_count = int(np.asarray(saved["optimizer_count"]).item())
+                builder = getattr(optimizer, "build", None)
+                if callable(builder):
+                    builder(model.trainable_variables)
+                optimizer_variables = getattr(optimizer, "variables", ())
+                optimizer_variables = optimizer_variables() if callable(optimizer_variables) else optimizer_variables
+                optimizer_variables = list(optimizer_variables)
+                if len(optimizer_variables) != expected_count:
+                    raise ValueError("Checkpoint optimizer state is incompatible with TensorFlow backend")
+                for index, variable in enumerate(optimizer_variables):
+                    key = f"optimizer_{index}"
+                    if key not in saved or tuple(saved[key].shape) != tuple(variable.shape):
+                        raise ValueError("Checkpoint optimizer state is incompatible with TensorFlow backend")
+                    variable.assign(saved[key])
             if session.data_source is not None and "stream_rows_consumed" in saved:
                 session.data_source.restore_rows(int(saved["stream_rows_consumed"]))

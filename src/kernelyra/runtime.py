@@ -139,8 +139,8 @@ class TrainingRuntime:
         self._release_scheduler_lock()
         return True
 
-    def checkpoint_path(self, run_id: str) -> Path:
-        return self.checkpoints.best_path(run_id)
+    def checkpoint_path(self, run_id: str, *, kind: str = "best") -> Path:
+        return self.checkpoints.path_for(run_id, kind)
 
     def command(self, run_id: str, command: str, actor: str = "runtime") -> RunInfo:
         with self.lock:
@@ -345,7 +345,10 @@ class TrainingRuntime:
         else:
             x, y = self.workspace.datasets.load_arrays(run.dataset)
         checkpoint = self.checkpoint_path(run.id)
-        source = checkpoint if checkpoint.exists() else (self.checkpoint_path(run.base_run_id) if run.base_run_id else None)
+        checkpoint_policy = dict(run.checkpoint_policy or {})
+        source = self.checkpoints.resume_path(run.id, checkpoint_policy.get("resume", "last"))
+        if source is None and run.base_run_id:
+            source = self.checkpoint_path(run.base_run_id)
         backend_name = run.effective_backend or run.backend
         total_memory = int(float(self.workspace.hardware.get("ram_gb") or 8) * 1024**3)
         gpu_memory = max(
@@ -382,6 +385,7 @@ class TrainingRuntime:
             "streaming": bool(dataset_spec),
             "data_contract_signature": run.data_contract.get("signature"),
             "split_strategy": run.split_policy.get("execution_strategy", run.split_policy.get("strategy", "random")),
+            "checkpoint_policy": checkpoint_policy,
         }
         config_hash = hashlib.sha256(
             json.dumps(config_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -456,6 +460,7 @@ class TrainingRuntime:
             "data_contract": run.data_contract,
             "split_policy": run.split_policy,
             "chunk_policy": run.chunk_policy,
+            "checkpoint_policy": checkpoint_policy,
         }
         if run.model_path:
             self._capture_finetune_baseline(run, worker, checkpoint, checkpoint_metadata)
@@ -757,8 +762,10 @@ class TrainingRuntime:
         checkpoint: Path,
     ) -> LifecycleOutcome:
         restorer = getattr(worker, "restore_checkpoint", None)
-        if checkpoint.exists() and callable(restorer):
-            restorer(checkpoint)
+        final_kind = str((run.checkpoint_policy or {}).get("final", "best"))
+        selected_checkpoint = self.checkpoint_path(run.id, kind=final_kind)
+        if selected_checkpoint.exists() and callable(restorer):
+            restorer(selected_checkpoint)
             self._record_worker_events(run, worker)
         evaluator = getattr(worker, "evaluate_test", None)
         if not callable(evaluator):
@@ -773,7 +780,7 @@ class TrainingRuntime:
             **run.metrics,
             "test": test_result.metrics,
             "test_score": test_result.score,
-            "tested_checkpoint": run.checkpoint.get("best", {}).get("sha256"),
+            "tested_checkpoint": run.checkpoint.get(final_kind, {}).get("sha256"),
             "trace": trace.events,
         }
         self._save_worker_progress(run)

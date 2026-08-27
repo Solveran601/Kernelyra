@@ -112,6 +112,13 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--degradation-patience", type=int, help="Consecutive bad validations before rollback")
         item.add_argument("--early-stopping-patience", type=int, help="Validations without progress before stop")
         item.add_argument("--target-patience", type=int, help="Consecutive target hits required to stop")
+        item.add_argument("--checkpoint-resume", choices=["last", "best"], help="Checkpoint used when a run resumes")
+        item.add_argument("--checkpoint-final", choices=["best", "last"], help="Checkpoint returned after training")
+        item.add_argument(
+            "--checkpoint-rollback",
+            choices=["best"],
+            help="Model Guard rollback checkpoint; best is the only safe value",
+        )
 
     plan_command = commands.add_parser("plan", help="Inspect data and print the resolved automatic training plan")
     add_training_options(plan_command)
@@ -534,7 +541,7 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             "learning_rate", "weight_decay", "hidden_layers", "precision", "data_mode", "cpu", "ram", "gpu", "threads",
             "data_workers", "prefetch", "seed", "evaluation_interval", "min_improvement",
             "degradation_margin", "degradation_patience", "early_stopping_patience",
-            "target_patience", "accept_batch_risk", "name",
+            "target_patience", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback", "accept_batch_risk", "name",
         )
         options = {name: getattr(args, name, None) for name in names if getattr(args, name, None) is not None}
         with AutoTrainer(root, config=args.config) as trainer:

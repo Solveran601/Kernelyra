@@ -10,6 +10,23 @@ from typing import Any
 
 from .errors import RunError
 
+_CHECKPOINT_FINAL_KINDS = {"best", "last"}
+
+
+def resolve_checkpoint_policy(policy: dict[str, Any] | None = None) -> dict[str, str]:
+    """Validate the durable checkpoint selection policy for one run."""
+    values = {"resume": "last", "final": "best", "rollback": "best", **(policy or {})}
+    resume = str(values["resume"]).strip().lower()
+    final = str(values["final"]).strip().lower()
+    rollback = str(values["rollback"]).strip().lower()
+    if resume not in _CHECKPOINT_FINAL_KINDS:
+        raise RunError("checkpoint resume must be 'last' or 'best'")
+    if final not in _CHECKPOINT_FINAL_KINDS:
+        raise RunError("checkpoint final must be 'best' or 'last'")
+    if rollback != "best":
+        raise RunError("checkpoint rollback must remain 'best' for Model Guard safety")
+    return {"resume": resume, "final": final, "rollback": rollback}
+
 
 class CheckpointManager:
     FORMAT_VERSION = 1
@@ -23,6 +40,21 @@ class CheckpointManager:
 
     def last_path(self, run_id: str) -> Path:
         return self.root / f"{run_id}.last.npz"
+
+    def path_for(self, run_id: str, kind: str) -> Path:
+        if kind == "best":
+            return self.best_path(run_id)
+        if kind == "last":
+            return self.last_path(run_id)
+        raise RunError("checkpoint kind must be 'best' or 'last'")
+
+    def resume_path(self, run_id: str, kind: str = "last") -> Path | None:
+        """Return the requested durable state, with a safe fallback to best."""
+        selected = self.path_for(run_id, kind)
+        if selected.is_file():
+            return selected
+        fallback = self.best_path(run_id)
+        return fallback if fallback.is_file() else None
 
     @staticmethod
     def _sha256(path: Path) -> str:

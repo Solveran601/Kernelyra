@@ -7,6 +7,7 @@ from .architectures import resolve_training_contract
 from .backends.registry import BackendRegistry
 from .batch import BatchPlan, plan_batch
 from .capabilities import CapabilityRegistry
+from .checkpoints import resolve_checkpoint_policy
 from .datasets import DatasetManager
 from .errors import ConfigurationError, RunError, RunNotFoundError
 from .hardware import (
@@ -165,6 +166,10 @@ class RunManager:
             raise ConfigurationError("early_stopping_patience must be between 1 and 10000")
         if not 1 <= config.target_patience <= 100:
             raise ConfigurationError("target_patience must be between 1 and 100")
+        try:
+            checkpoint_policy = resolve_checkpoint_policy(config.checkpoint_policy)
+        except RunError as error:
+            raise ConfigurationError(str(error)) from None
         run = RunInfo.new(
             name=config.name[:80], dataset=config.dataset, backend=config.backend, effective_backend=None,
             objective=config.objective, architecture=architecture, model_format=model_format, mode=config.mode,
@@ -179,6 +184,7 @@ class RunManager:
             evaluation_interval=config.evaluation_interval, min_improvement=config.min_improvement,
             degradation_margin=degradation_margin, degradation_patience=config.degradation_patience,
             early_stopping_patience=config.early_stopping_patience, target_patience=config.target_patience,
+            checkpoint_policy=checkpoint_policy,
             data_contract=dict(config.data_contract), split_policy=dict(config.split_policy),
             chunk_policy=dict(config.chunk_policy),
         )
