@@ -8,6 +8,7 @@ module kernelyra_multiclass_training
   use kernelyra_multiclass_loss, only: kr_multiclass_cross_entropy
   use kernelyra_matrix_scores, only: kr_fortran_dense_scores_f32
   use kernelyra_training_state, only: kr_update_biases
+  use kernelyra_training_guard, only: kr_fortran_guard_vector_update_f32
   use kernelyra_vector_kernels, only: kr_fortran_update_f32
   implicit none
 contains
@@ -21,6 +22,7 @@ contains
     real(c_float), intent(inout) :: probabilities(*)
     real(c_float), intent(out) :: gradient(*), bias_gradient(*), loss
     integer(c_int), intent(out) :: status
+    integer(c_int) :: guard_status
     integer(c_size_t) :: row, feature, category, offset, weight_offset, truth, weight_values
     real(c_float) :: error, inverse
     real(c_double) :: total_loss
@@ -59,6 +61,12 @@ contains
         end do
       end do
     end do
+    call kr_fortran_guard_vector_update_f32( &
+        gradient, weight_values, bias_gradient, classes, total_loss, guard_status)
+    if (guard_status /= 0_c_int) then
+      status = 3_c_int
+      return
+    end if
     inverse = 1.0_c_float / real(rows, c_float)
     call kr_fortran_update_f32(weights, gradient, learning_rate, inverse, decay, weight_values)
     call kr_update_biases(bias, bias_gradient, learning_rate, inverse, classes)

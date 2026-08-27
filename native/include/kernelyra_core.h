@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-enum { KR_ABI_VERSION = 6 };
+enum { KR_ABI_VERSION = 8 };
 enum { KR_TASK_BINARY = 0, KR_TASK_MULTICLASS = 1, KR_TASK_REGRESSION = 2 };
 enum { KR_SPLIT_TRAIN = 0, KR_SPLIT_VALIDATION = 1, KR_SPLIT_TEST = 2 };
 enum {
@@ -47,6 +47,28 @@ typedef struct kr_text_chunk {
   size_t end;
 } kr_text_chunk;
 
+typedef struct kr_memory_arena_stats {
+  size_t capacity_bytes;
+  size_t used_bytes;
+  size_t high_water_bytes;
+  size_t alignment;
+  uint64_t allocations;
+  uint64_t failed_allocations;
+  uint64_t resets;
+} kr_memory_arena_stats;
+
+typedef struct kr_memory_batch_plan {
+  size_t capacity_bytes;
+  size_t requested_rows;
+  size_t planned_rows;
+  size_t maximum_rows;
+  size_t features;
+  size_t buffer_count;
+  size_t bytes_per_row;
+  size_t required_bytes;
+  uint32_t fits;
+} kr_memory_batch_plan;
+
 #define KR_TEXT_CHUNK_PLAN_INVALID ((size_t)-1)
 
 KR_API const char* kr_core_version(void);
@@ -58,6 +80,21 @@ KR_API uint32_t kr_core_set_component_mask(uint32_t mask);
 KR_API const char* kr_last_error(void);
 KR_API void* kr_memory_alloc_aligned(size_t bytes, size_t alignment);
 KR_API void kr_memory_free_aligned(void* pointer);
+/* A single-owner monotonic arena. reset/rewind invalidate released leases. */
+KR_API void* kr_memory_arena_create(size_t capacity_bytes, size_t alignment);
+KR_API void kr_memory_arena_destroy(void* handle);
+KR_API void* kr_memory_arena_acquire(void* handle, size_t bytes, size_t alignment);
+KR_API size_t kr_memory_arena_mark(const void* handle);
+KR_API int kr_memory_arena_rewind(void* handle, size_t mark);
+KR_API void kr_memory_arena_reset(void* handle);
+KR_API int kr_memory_arena_get_stats(const void* handle, kr_memory_arena_stats* output);
+/* Plan two or more aligned float32 batch buffers without allocating them. */
+KR_API int kr_memory_batch_plan_make(
+    size_t capacity_bytes,
+    size_t requested_rows,
+    size_t features,
+    size_t buffer_count,
+    kr_memory_batch_plan* output);
 KR_API void kr_memory_normalize_f32(
     float* data, size_t rows, size_t features, const float* means, const float* stds);
 KR_API int kr_preprocess_f32(
@@ -130,6 +167,13 @@ KR_API int kr_model_train_random_steps(
     const float* y,
     size_t rows,
     size_t batch_size,
+    size_t steps,
+    float* loss);
+KR_API int kr_model_train_steps(
+    void* handle,
+    const float* x,
+    const float* y,
+    size_t rows,
     size_t steps,
     float* loss);
 KR_API int kr_model_predict(

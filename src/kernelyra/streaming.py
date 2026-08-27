@@ -6,6 +6,7 @@ import importlib.util
 import json
 import math
 import queue
+import re
 import threading
 from collections.abc import Generator, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -16,11 +17,13 @@ import numpy as np
 
 from .errors import DatasetError
 from .models import TaskType
+from .planning import ContextChunkPlanner
 
 HASH_BUCKETS = 64
 EVALUATION_ROWS = 4096
 STREAM_EXTENSIONS = {".csv", ".tsv", ".jsonl", ".ndjson", ".parquet", ".pq"}
 MAX_FOLDER_FILES = 100_000
+_GROUP_HINT = re.compile(r"(?:^|[_\-])(group|user|account|customer|session|conversation|document|device)(?:$|[_\-])", re.I)
 
 
 def _split_for_index(index: int) -> str:
@@ -34,6 +37,16 @@ def _split_for_index(index: int) -> str:
     if bucket < 30:
         return "test"
     return "train"
+
+
+def _context_column(columns: list[str], target: str) -> str | None:
+    """Select an explicit group-like column for the streaming split contract.
+
+    The selection is intentionally name-based and conservative.  It never
+    guesses a group from values; users can rename a column or choose a regular
+    tabular feature when that would be a better training contract.
+    """
+    return next((column for column in columns if column != target and _GROUP_HINT.search(column)), None)
 
 
 def _number(value: Any) -> float | None:
@@ -197,6 +210,14 @@ def _native_numeric_spec(
         from .native_core import NativeCoreError, NativeNumericCsvScan
 
         with NativeNumericCsvScan(source, target, delimiter) as scan:
+            selected_target = scan.target
+            # The native numeric CSV reader splits by record index.  Decline
+            # that fast route when a stable group has been detected rather
+            # than silently allowing one conversation/user/document in both
+            # training and evaluation.  Native arithmetic is still used by
+            # the backend through the general stream source.
+            if _context_column(list(scan.columns), selected_target) is not None:
+                return None
             if scan.split_records["validation"] < 8 or scan.split_records["test"] < 8:
                 return None
             numeric_values = [float(value) for value in scan.target_values]
@@ -219,7 +240,7 @@ def _native_numeric_spec(
                 "encoding": encoding,
                 "delimiter": delimiter,
                 "reader_engine": "kernelyra-native-csv-scan/1",
-                "target": scan.target,
+                "target": selected_target,
                 "columns": list(scan.columns),
                 "feature_columns": list(scan.feature_names),
                 "numeric_columns": list(scan.feature_names),
@@ -288,7 +309,13 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
     )
     if not selected_target or selected_target not in columns:
         raise DatasetError("Target column was not found")
-    feature_columns = [column for column in columns if column != selected_target]
+    context_column = _context_column(columns, selected_target)
+    context_planner = ContextChunkPlanner(seed=42) if context_column else None
+    # A context key is a split boundary, not a learning signal.  Keeping it as
+    # a hashed categorical feature would let a model memorise identities while
+    # the splitter is trying to protect their held-out evaluation.
+    excluded_columns = {selected_target, context_column}
+    feature_columns = [column for column in columns if column not in excluded_columns]
     if not feature_columns:
         raise DatasetError("Dataset has no feature columns")
     numeric_columns = {
@@ -308,7 +335,11 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
         nonlocal row_count, target_numeric
         if list(row) != columns:
             raise DatasetError(f"Folder dataset schema changed near global row {row_count + 1}")
-        split = _split_for_index(row_count)
+        split = (
+            context_planner.split_for(str(row.get(context_column, "")))
+            if context_planner is not None and context_column is not None
+            else _split_for_index(row_count)
+        )
         split_records[split] += 1
         row_count += 1
         target_value = str(row.get(selected_target, "")).strip()
@@ -367,6 +398,8 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
     return {
         **base,
         "target": selected_target,
+        "context_column": context_column,
+        "split_strategy": "context" if context_column else "stable_record_hash",
         "columns": columns,
         "feature_columns": feature_columns,
         "numeric_columns": sorted(numeric_columns),
@@ -396,6 +429,9 @@ class StreamingTabularSource:
         self.prefetch = max(0, int(prefetch))
         self.epoch = 0
         self.rows_consumed = 0
+        context_column = self.spec.get("context_column")
+        self._context_column = str(context_column) if context_column else None
+        self._context_planner = ContextChunkPlanner(seed=42) if self._context_column else None
         self._iterator = self._training_rows()
         self._executor = (
             ThreadPoolExecutor(max_workers=self.data_workers, thread_name_prefix="kernelyra-data")
@@ -413,7 +449,9 @@ class StreamingTabularSource:
         split = self.spec.get("split_records") or {}
         return max(1, int(split.get("train") or int(int(self.spec["records"]) * .70)))
 
-    def _split(self, index: int) -> str:
+    def _split(self, index: int, row: Mapping[str, str]) -> str:
+        if self._context_column is not None and self._context_planner is not None:
+            return self._context_planner.split_for(str(row.get(self._context_column, "")))
         return _split_for_index(index)
 
     def _encode(self, row: Mapping[str, str]) -> tuple[np.ndarray, float]:
@@ -447,7 +485,7 @@ class StreamingTabularSource:
         while True:
             emitted = 0
             for index, row in enumerate(iter_rows(self.spec)):
-                if self._split(index) != "train":
+                if self._split(index, row) != "train":
                     continue
                 emitted += 1
                 yield row
@@ -458,7 +496,7 @@ class StreamingTabularSource:
         validation: list[tuple[np.ndarray, float]] = []
         test: list[tuple[np.ndarray, float]] = []
         for index, row in enumerate(iter_rows(self.spec)):
-            split = self._split(index)
+            split = self._split(index, row)
             if split == "validation" and len(validation) < EVALUATION_ROWS:
                 validation.append(self._encode(row))
             elif split == "test" and len(test) < EVALUATION_ROWS:

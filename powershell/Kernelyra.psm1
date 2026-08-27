@@ -65,7 +65,7 @@ function Get-KernelyraPlan {
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Dataset,
         [string]$Target,
         [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "auto",
-        [ValidateSet("careful", "balanced", "throughput", "maximum")] [string]$Pack = "balanced",
+        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
         [ValidateRange(10,100)] [int]$Cpu = 70,
@@ -86,7 +86,7 @@ function Start-KernelyraTraining {
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Dataset,
         [string]$Target,
         [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "auto",
-        [ValidateSet("careful", "balanced", "throughput", "maximum")] [string]$Pack = "balanced",
+        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
         [ValidateRange(10,100)] [int]$Cpu = 70,
@@ -123,6 +123,139 @@ function Get-KernelyraExecution {
     [CmdletBinding()]
     param([string]$Workspace = ".")
     Invoke-KernelyraJson -Workspace $Workspace -Arguments @("execution")
+}
+
+function Get-KernelyraNativeStatus {
+    [CmdletBinding()]
+    param([string]$Workspace = ".")
+
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("native", "status")
+}
+
+function Get-KernelyraCpuTuning {
+    [CmdletBinding()]
+    param(
+        [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "cpu",
+        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
+        [ValidateRange(32,1000000000)] [int]$Records = 100000,
+        [ValidateRange(1,1000000)] [int]$Features = 32,
+        [ValidateRange(1,1000000)] [int]$BatchSize = 64,
+        [switch]$Streaming,
+        [string]$Workspace = "."
+    )
+
+    $arguments = @("tune", "--execution", $Execution, "--pack", $Pack, "--records", $Records, "--features", $Features, "--batch-size", $BatchSize)
+    if ($Streaming) { $arguments += "--streaming" }
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
+}
+
+function Get-KernelyraDataContract {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Path,
+        [string]$Target,
+        [string]$Workspace = "."
+    )
+
+    $arguments = @("dataset", "doctor", $Path)
+    if ($Target) { $arguments += @("--target", $Target) }
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
+}
+
+function Get-KernelyraPack {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string]$Name,
+        [string]$Workspace = "."
+    )
+
+    if ($Name) {
+        return Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "show", $Name)
+    }
+    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "list")
+    return $result.packs
+}
+
+function Get-KernelyraPackAlgorithm {
+    [CmdletBinding()]
+    param([string]$Workspace = ".")
+
+    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "algorithms")
+    return $result.algorithms
+}
+
+function Get-KernelyraPackTablePath {
+    [CmdletBinding()]
+    param([string]$Workspace = ".")
+
+    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "path")
+    return $result.path
+}
+
+function Copy-KernelyraPack {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Name,
+        [Alias("From")]
+        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Base = "balanced",
+        [string]$Label,
+        [string]$Workspace = "."
+    )
+
+    $arguments = @("packs", "clone", $Name, "--from", $Base)
+    if ($Label) { $arguments += @("--label", $Label) }
+    if ($PSCmdlet.ShouldProcess($Name, "Create custom Kernelyra pack from $Base")) {
+        Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
+    }
+}
+
+function Add-KernelyraPackAlgorithm {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Name,
+        [Parameter(Mandatory, Position = 1)] [string]$Algorithm,
+        [string]$Workspace = "."
+    )
+
+    if ($PSCmdlet.ShouldProcess($Name, "Add Kernelyra pack algorithm $Algorithm")) {
+        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "add-algorithm", $Name, $Algorithm)
+    }
+}
+
+function Remove-KernelyraPackAlgorithm {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "Medium")]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Name,
+        [Parameter(Mandatory, Position = 1)] [string]$Algorithm,
+        [string]$Workspace = "."
+    )
+
+    if ($PSCmdlet.ShouldProcess($Name, "Remove Kernelyra pack algorithm $Algorithm")) {
+        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "remove-algorithm", $Name, $Algorithm)
+    }
+}
+
+function Remove-KernelyraPack {
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Name,
+        [string]$Workspace = "."
+    )
+
+    if ($PSCmdlet.ShouldProcess($Name, "Delete custom Kernelyra pack")) {
+        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "delete", $Name)
+    }
+}
+
+function Get-KernelyraRunStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$RunId,
+        [string]$Workspace = "."
+    )
+
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("run", "get", $RunId)
 }
 
 function Get-KernelyraChunkPlan {
@@ -192,6 +325,17 @@ Export-ModuleMember -Function @(
     "Export-KernelyraModel",
     "Get-KernelyraReport",
     "Get-KernelyraExecution",
+    "Get-KernelyraNativeStatus",
+    "Get-KernelyraCpuTuning",
+    "Get-KernelyraDataContract",
+    "Get-KernelyraPack",
+    "Get-KernelyraPackAlgorithm",
+    "Get-KernelyraPackTablePath",
+    "Copy-KernelyraPack",
+    "Add-KernelyraPackAlgorithm",
+    "Remove-KernelyraPackAlgorithm",
+    "Remove-KernelyraPack",
+    "Get-KernelyraRunStatus",
     "Get-KernelyraChunkPlan",
     "Invoke-Kernelyra"
 )

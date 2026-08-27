@@ -87,6 +87,45 @@ int main() {
               "Zig repair uses the matching feature mean")) {
     return 1;
   }
+  void* arena = kr_memory_arena_create(1024U, 64U);
+  if (!expect(arena != nullptr, "Zig monotonic arena is created")) return 1;
+  const uintptr_t first_address = reinterpret_cast<uintptr_t>(kr_memory_arena_acquire(arena, 96U, 64U));
+  const size_t mark = kr_memory_arena_mark(arena);
+  const uintptr_t second_address = reinterpret_cast<uintptr_t>(kr_memory_arena_acquire(arena, 128U, 64U));
+  kr_memory_arena_stats arena_stats{};
+  const bool arena_valid = first_address != 0U && second_address != 0U &&
+                           first_address % 64U == 0U && second_address % 64U == 0U &&
+                           kr_memory_arena_get_stats(arena, &arena_stats) == 1 &&
+                           arena_stats.capacity_bytes == 1024U && arena_stats.used_bytes > mark &&
+                           arena_stats.allocations == 2U;
+  if (!expect(arena_valid, "Zig arena returns aligned monotonic leases and records statistics") ||
+      !expect(kr_memory_arena_rewind(arena, mark) == 1, "Zig arena rewinds to a validated mark") ||
+      !expect(kr_memory_arena_acquire(arena, 2048U, 64U) == nullptr,
+              "Zig arena rejects a lease beyond its hard capacity") ||
+      !expect(kr_memory_arena_get_stats(arena, &arena_stats) == 1 && arena_stats.failed_allocations == 1U,
+              "Zig arena records rejected leases")) {
+    kr_memory_arena_destroy(arena);
+    return 1;
+  }
+  kr_memory_arena_reset(arena);
+  if (!expect(kr_memory_arena_get_stats(arena, &arena_stats) == 1 && arena_stats.used_bytes == 0U &&
+                  arena_stats.resets == 1U,
+              "Zig arena resets leases in constant time")) {
+    kr_memory_arena_destroy(arena);
+    return 1;
+  }
+  kr_memory_arena_destroy(arena);
+  kr_memory_batch_plan batch_plan{};
+  if (!expect(kr_memory_batch_plan_make(4096U, 200U, 3U, 2U, &batch_plan) == 1,
+              "Zig batch planner accepts a fitting aligned feature and target pair") ||
+      !expect(batch_plan.fits == 1U && batch_plan.planned_rows == 200U && batch_plan.bytes_per_row == 16U &&
+                  batch_plan.required_bytes == 3264U,
+              "Zig batch planner accounts for float32 values and alignment reserve") ||
+      !expect(kr_memory_batch_plan_make(4096U, 300U, 3U, 2U, &batch_plan) == 1 && batch_plan.fits == 0U &&
+                  batch_plan.maximum_rows == 252U && batch_plan.planned_rows == 252U,
+              "Zig batch planner reports the maximum safe row count without allocating")) {
+    return 1;
+  }
   const float moment_values[] = {1.0F, 2.0F, 3.0F, 4.0F};
   float mean = 0.0F;
   float standard_deviation = 0.0F;
@@ -186,6 +225,89 @@ int main() {
   kr_model_destroy(model);
   if (!expect(prediction_ok && std::isfinite(final_loss) && final_loss < first_loss,
               "Fortran multiclass core reduces loss and predicts")) {
+    return 1;
+  }
+
+  const float binary_x[] = {
+      -2.0F, -1.0F, -1.0F, -1.5F, -1.0F, -0.5F,
+       1.0F,  0.5F,  1.0F,  1.5F,  2.0F,  1.0F,
+  };
+  const float binary_y[] = {0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 1.0F};
+  kr_model_config binary{};
+  binary.abi_version = KR_ABI_VERSION;
+  binary.task = KR_TASK_BINARY;
+  binary.features = 2U;
+  binary.classes = 1U;
+  binary.learning_rate = 0.1F;
+  void* binary_model = kr_model_create(&binary);
+  if (!expect(binary_model != nullptr, "binary model is created")) return 1;
+  first_loss = 0.0F;
+  final_loss = 0.0F;
+  if (!expect(kr_model_train_step(binary_model, binary_x, binary_y, 6U, &first_loss) == 1 &&
+                  kr_model_train_steps(binary_model, binary_x, binary_y, 6U, 79U, &final_loss) == 1,
+              "tiled Fortran binary single and bulk training succeed")) {
+    kr_model_destroy(binary_model);
+    return 1;
+  }
+  std::vector<float> binary_probabilities(6U);
+  const bool binary_prediction_ok =
+      kr_model_predict(binary_model, binary_x, 6U, binary_probabilities.data(), binary_probabilities.size()) == 1;
+  kr_model_destroy(binary_model);
+  if (!expect(binary_prediction_ok && std::isfinite(final_loss) && final_loss < first_loss &&
+                  binary_probabilities.front() < 0.5F && binary_probabilities.back() > 0.5F,
+              "tiled Fortran binary core learns a separable batch")) {
+    return 1;
+  }
+  void* guarded_binary_model = kr_model_create(&binary);
+  if (!expect(guarded_binary_model != nullptr, "guarded binary model is created")) return 1;
+  std::vector<float> weights_before(2U);
+  std::vector<float> bias_before(1U);
+  std::vector<float> weights_after(2U);
+  std::vector<float> bias_after(1U);
+  if (!expect(kr_model_export(guarded_binary_model, weights_before.data(), weights_before.size(),
+                              bias_before.data(), bias_before.size()) == 1,
+              "guarded binary model is exportable")) {
+    kr_model_destroy(guarded_binary_model);
+    return 1;
+  }
+  std::vector<float> nonfinite_binary_x(binary_x, binary_x + 12U);
+  nonfinite_binary_x[0] = std::numeric_limits<float>::quiet_NaN();
+  float guarded_loss = 0.0F;
+  const int guarded_update =
+      kr_model_train_step(guarded_binary_model, nonfinite_binary_x.data(), binary_y, 6U, &guarded_loss);
+  const int guarded_export = kr_model_export(guarded_binary_model, weights_after.data(), weights_after.size(),
+                                             bias_after.data(), bias_after.size());
+  kr_model_destroy(guarded_binary_model);
+  if (!expect(guarded_update == 0 && guarded_export == 1 && weights_after == weights_before &&
+                  bias_after == bias_before,
+              "Fortran pre-update guard rejects non-finite batches without changing parameters")) {
+    return 1;
+  }
+
+  const float regression_x[] = {-3.0F, -2.0F, -1.0F, 1.0F, 2.0F, 3.0F};
+  const float regression_y[] = {-6.0F, -4.0F, -2.0F, 2.0F, 4.0F, 6.0F};
+  kr_model_config regression{};
+  regression.abi_version = KR_ABI_VERSION;
+  regression.task = KR_TASK_REGRESSION;
+  regression.features = 1U;
+  regression.classes = 1U;
+  regression.learning_rate = 0.04F;
+  regression.target_mean = 0.0F;
+  regression.target_std = 1.0F;
+  void* regression_model = kr_model_create(&regression);
+  if (!expect(regression_model != nullptr, "regression model is created")) return 1;
+  first_loss = 0.0F;
+  final_loss = 0.0F;
+  if (!expect(kr_model_train_step(regression_model, regression_x, regression_y, 6U, &first_loss) == 1 &&
+                  kr_model_train_steps(
+                      regression_model, regression_x, regression_y, 6U, 99U, &final_loss) == 1,
+              "tiled Fortran regression single and bulk training succeed")) {
+    kr_model_destroy(regression_model);
+    return 1;
+  }
+  kr_model_destroy(regression_model);
+  if (!expect(std::isfinite(final_loss) && final_loss < first_loss,
+              "tiled Fortran regression core reduces loss")) {
     return 1;
   }
   return 0;

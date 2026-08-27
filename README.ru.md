@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Нативное обучение табличных данных с контролем ресурсов.</strong></p>
 
-Kernelyra **0.5.0a2 (V3 alpha)** — локальная библиотека для обучения табличных
+Kernelyra **0.5.0a3 (V3 alpha)** — локальная библиотека для обучения табличных
 моделей из терминала. Один и тот же путь планирования доступен в CLI, Python
 API, PowerShell-модуле и JSONL-протоколе для поставляемых SDK.
 
@@ -32,13 +32,17 @@ API, PowerShell-модуле и JSONL-протоколе для поставля
 - Встроенные native и NumPy backend; PyTorch и TensorFlow/Keras — опционально,
   когда они установлены.
 - Явный выбор выполнения `cpu` или `hybrid`, заданные разработчиком лимиты
-  CPU/RAM/GPU/потоков и четыре необязательных пакета алгоритмов (`careful`,
-  `balanced`, `throughput`, `maximum`). Пакеты меняют ограниченные значения
-  чанков/предзагрузки/рабочей памяти, но не классифицируют компьютер
+  CPU/RAM/GPU/потоков, четыре встроенных пакета алгоритмов (`careful`,
+  `balanced`, `throughput`, `maximum`) и проверяемые пользовательские паки на
+  их основе. Пакеты реально меняют потоки, bulk-вызовы, чанки, предзагрузку и
+  размер арены, но не классифицируют компьютер
   пользователя. Есть checkpoints, resume, отложенная проверка и восстановление
   лучшего checkpoint.
 - Data Doctor: ограниченная предварительная проверка, подписанный контракт
   датасета, детерминированная рекомендация split и план неравномерных чанков.
+- Подготовка UTF-8-текста: native-планирование чанков при доступном native-core,
+  обратимый byte-токенизатор и causal loss-mask для будущего тренера. Это не
+  LLM-тренер.
 - Model Guard V2: проверка конечности метрик и сохранение тренда качества в
   health-записи run.
 - Переносимые JSON/HTML-отчёты эксперимента и явные лимиты CPU/RAM/GPU.
@@ -46,20 +50,23 @@ API, PowerShell-модуле и JSONL-протоколе для поставля
 Data Doctor намеренно ограничен выборкой: выводы относятся к проверенным
 строкам, а не ко всему датасету. Для materialized training классификация
 разделяется детерминированно по классам, а time-like колонка сохраняет исходный
-порядок входных строк. Обнаруженная group/context колонка пока является только
-**предупреждением**: group-exclusive split в 0.5 ещё не реализован.
+порядок входных строк. Для CSV, TSV, JSONL/NDJSON и Parquet AutoTrainer при
+обнаружении group/context-колонки переводит данные в streaming split: каждый
+контекст остаётся в одном split, а его идентификатор исключается из признаков.
+Для форматов без такого streaming-пути остаётся явное предупреждение об утечке.
 
 <a id="install"></a>
 
 ## Установка из исходников
 
-Публикация на PyPI не настроена. После успешной сборки GitHub Actions для тега
-Windows-артефакты этой alpha-версии прикрепляются к её GitHub pre-release.
+Публикации на PyPI и готовых GitHub-релизов пока нет. Устанавливай исходную
+копию с Python 3.11–3.13.
 
 ```powershell
 git clone https://github.com/Solveran601/Kernelyra.git
 Set-Location Kernelyra
-python -m pip install -e .
+py -3.13 -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
 ```
 
 `.[data]` нужен для Parquet, `.[torch]` — для PyTorch, а `.[tensorflow]` — для
@@ -67,7 +74,7 @@ TensorFlow/Keras.
 
 <a id="powershell"></a>
 
-## Три команды PowerShell
+## CLI из PowerShell
 
 ```powershell
 python -m kernelyra doctor
@@ -80,6 +87,21 @@ python -m kernelyra plan .\data\train.csv --target label --execution cpu --pack 
 ```powershell
 python -m kernelyra dataset doctor .\data\train.csv --target label
 ```
+
+Посмотри таблицу паков и доступные алгоритмы, затем создай изменяемый пак, не
+трогая встроенный эталон:
+
+```powershell
+python -m kernelyra packs list
+python -m kernelyra packs algorithms
+python -m kernelyra packs clone my-careful --from careful
+python -m kernelyra packs add-algorithm my-careful thread_parallel_gradient
+python -m kernelyra tune --execution cpu --pack my-careful --records 100000 --features 64 --batch-size 128
+```
+
+`python -m kernelyra packs path` показывает путь к редактируемой JSON-таблице.
+Kernelyra валидирует её при каждом чтении. Ограничения аллокаций, границы
+контекста и Model Guard являются обязательными защитами и из пака не удаляются.
 
 ## Python
 
@@ -99,9 +121,33 @@ print(report["output"])
 ```powershell
 Import-Module .\powershell\Kernelyra.psd1 -Force
 Test-KernelyraDataset .\data\train.csv -Target label
+Get-KernelyraDataContract .\data\train.csv -Target label
+Get-KernelyraNativeStatus
+Get-KernelyraCpuTuning -Records 100000 -Features 32 -BatchSize 64
+Get-KernelyraPack | Format-Table Name, Base, Built_In, Algorithms
+Copy-KernelyraPack my-careful -Base careful
+Add-KernelyraPackAlgorithm my-careful thread_parallel_gradient
+Get-KernelyraCpuTuning -Pack my-careful -Records 100000 -Features 64 -BatchSize 128
 Get-KernelyraPlan .\data\train.csv -Target label
 Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack throughput -Cpu 100 -Ram 85 -Threads 12
 ```
+
+## Воспроизводимый CPU-бенчмарк
+
+Один локальный однопоточный тест на MSI Modern 14 C12M (Core i5-1235U,
+Windows 11, Python 3.12.9, NumPy 2.1.3) измерял 1 000 одинаковых полнобатчевых
+float32-обновлений логистической модели на матрице 8 192 × 64. Выполнено девять
+чередующихся прогонов.
+
+| Реализация | Медиана | Шагов/с | Accuracy |
+|---|---:|---:|---:|
+| Kernelyra native 3.4 | 0,133655 с | 7 482,0 | 99,0356% |
+| NumPy 2.1.3, OpenBLAS 1 поток | 0,120028 с | 8 331,4 | 99,0356% |
+
+В этом тесте NumPy быстрее в `1,114×`. Loss Kernelyra отличается только на
+`1,49e-8`, но результат ничего не доказывает для другого железа, датасетов,
+моделей и нагрузок. См. [методику и runner](benchmarks/cpu/README.md) и
+[сырой JSON девяти прогонов](benchmarks/cpu/results/modern-14-c12m-v0.5.0a3.json).
 
 <a id="limits"></a>
 

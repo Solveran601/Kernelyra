@@ -54,6 +54,22 @@ uint32_t kr_zig_all_finite_f32(const float* values, size_t count);
 void kr_zig_clip_f32(float* values, size_t count, float limit);
 void* kr_zig_alloc_aligned(size_t bytes, size_t alignment);
 void kr_zig_free_aligned(void* pointer);
+void* kr_zig_arena_create(size_t capacity, size_t alignment);
+void kr_zig_arena_destroy(void* handle);
+void* kr_zig_arena_acquire(void* handle, size_t bytes, size_t alignment);
+size_t kr_zig_arena_mark(const void* handle);
+uint32_t kr_zig_arena_rewind(void* handle, size_t offset);
+void kr_zig_arena_reset(void* handle);
+size_t kr_zig_arena_capacity(const void* handle);
+size_t kr_zig_arena_used(const void* handle);
+size_t kr_zig_arena_high_water(const void* handle);
+size_t kr_zig_arena_alignment(const void* handle);
+uint64_t kr_zig_arena_allocations(const void* handle);
+uint64_t kr_zig_arena_failed_allocations(const void* handle);
+uint64_t kr_zig_arena_resets(const void* handle);
+uint32_t kr_zig_batch_plan_make(
+    size_t capacity_bytes, size_t requested_rows, size_t features, size_t buffer_count,
+    kr_memory_batch_plan* output);
 #endif
 #if KR_HAS_FORTRAN_NUMERIC
 void kr_fortran_gradient_f32(
@@ -71,11 +87,12 @@ void kr_fortran_update_f32(
     float decay, size_t values);
 void kr_fortran_binary_train_f32(
     const float* x, const float* y, size_t rows, size_t features, float* weights, float* bias,
-    float learning_rate, float decay, float* errors, float* gradient, float* loss);
+    float learning_rate, float decay, float* errors, float* gradient,
+    int report_loss, float* loss, int* status);
 void kr_fortran_regression_train_f32(
     const float* x, const float* y, size_t rows, size_t features, float* weights, float* bias,
     float learning_rate, float decay, float target_mean, float target_std,
-    float* errors, float* gradient, float* loss);
+    float* errors, float* gradient, int report_loss, float* loss, int* status);
 void kr_fortran_multiclass_train_f32(
     const float* x, const float* y, size_t rows, size_t features, size_t classes,
     float* weights, float* bias, float learning_rate, float decay,
@@ -128,6 +145,7 @@ struct Model {
   std::vector<float> parallel_gradient;
   std::vector<float> parallel_bias;
   std::vector<double> parallel_loss;
+  std::vector<float> parallel_scratch;
   std::vector<float> errors;
   uint64_t rng_state = 0;
 };
@@ -799,10 +817,9 @@ void update_weights(
 }
 
 bool supported_model_abi(uint32_t version) {
-  // ABI 6 only adds standalone vector/memory exports; kr_model_config keeps
-  // its ABI-5 layout.  Accepting 5 preserves source compatibility with the
-  // packaged v5 Python orchestrator and older DLLs.
-  return version == 5U || version == KR_ABI_VERSION;
+  // ABI 6-8 add standalone memory exports; kr_model_config keeps its ABI-5
+  // layout.  Accepting all of them preserves released Python model callers.
+  return version == 5U || version == 6U || version == 7U || version == KR_ABI_VERSION;
 }
 
 bool valid_model(const Model* model) {
@@ -834,17 +851,46 @@ int configured_threads(const Model& model, size_t rows) {
   return static_cast<int>(std::min(requested, rows));
 }
 
+bool parallel_gradient_fits(const Model& model, size_t values, size_t rows) {
+  constexpr size_t max_parallel_gradient_values = 8U * 1024U * 1024U;
+  const size_t threads = static_cast<size_t>(configured_threads(model, rows));
+  return values <= max_parallel_gradient_values / std::max<size_t>(1U, threads);
+}
+
+bool prefer_fused_simd(size_t rows, size_t features) {
+#if KR_X86_GNU_SIMD
+  return rows * features >= 65536U && runtime_avx2_fma();
+#else
+  (void)rows;
+  (void)features;
+  return false;
+#endif
+}
+
+void reset_parallel_workspace(
+    Model& model, size_t gradient_values, size_t bias_values, size_t scratch_values, int threads) {
+  const size_t thread_count = static_cast<size_t>(threads);
+  const size_t gradients = thread_count * gradient_values;
+  const size_t biases = thread_count * bias_values;
+  const size_t scratch = thread_count * scratch_values;
+  if (model.parallel_gradient.size() < gradients) model.parallel_gradient.resize(gradients);
+  if (model.parallel_bias.size() < biases) model.parallel_bias.resize(biases);
+  if (model.parallel_loss.size() < thread_count) model.parallel_loss.resize(thread_count);
+  if (model.parallel_scratch.size() < scratch) model.parallel_scratch.resize(scratch);
+  std::fill_n(model.parallel_gradient.begin(), gradients, 0.0F);
+  std::fill_n(model.parallel_bias.begin(), biases, 0.0F);
+  std::fill_n(model.parallel_loss.begin(), thread_count, 0.0);
+}
+
 #if defined(_OPENMP)
 int train_binary_parallel(
-    Model& model, const float* x, const float* y, size_t rows, float* loss) {
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
   const int threads = configured_threads(model, rows);
   // Do not call a Fortran scalar kernel once per row here.  A local C++ AVX2
   // accumulator keeps the entire hot loop in one compiled region; Fortran is
   // still used by the single-thread and bulk numerical paths.
-  model.parallel_gradient.assign(static_cast<size_t>(threads) * features, 0.0F);
-  model.parallel_bias.assign(threads, 0.0F);
-  model.parallel_loss.assign(threads, 0.0);
+  reset_parallel_workspace(model, features, 1U, 0U, threads);
 #pragma omp parallel num_threads(threads)
   {
     const int thread = omp_get_thread_num();
@@ -856,7 +902,7 @@ int train_binary_parallel(
       const float* row = x + static_cast<size_t>(row_index) * features;
       const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
       const float error = probability - y[row_index];
-      total_loss += binary_cross_entropy(y[row_index], probability);
+      if (report_loss) total_loss += binary_cross_entropy(y[row_index], probability);
       bias_gradient += error;
       add_scaled(gradient, row, error, features);
     }
@@ -869,22 +915,26 @@ int train_binary_parallel(
                model.parallel_gradient.data() + static_cast<size_t>(thread) * features,
                1.0F, features);
   }
-  const float inverse = 1.0F / static_cast<float>(rows);
-  update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
-                 inverse, model.config.weight_decay, features);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
   for (int thread = 0; thread < threads; ++thread) {
     bias_gradient += model.parallel_bias[thread];
     total_loss += model.parallel_loss[thread];
   }
+  if (!values_are_finite(model.gradient.data(), features) ||
+      !std::isfinite(bias_gradient) || !std::isfinite(total_loss)) {
+    return fail("parallel binary pre-update guard rejected the batch");
+  }
+  const float inverse = 1.0F / static_cast<float>(rows);
+  update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
+                 inverse, model.config.weight_decay, features);
   model.bias[0] -= model.config.learning_rate * bias_gradient * inverse;
   *loss = static_cast<float>(total_loss / static_cast<double>(rows));
   return std::isfinite(*loss) ? 1 : fail("parallel binary loss became non-finite");
 }
 
 int train_regression_parallel(
-    Model& model, const float* x, const float* y, size_t rows, float* loss) {
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
   const int threads = configured_threads(model, rows);
   const float target_std = std::abs(model.config.target_std) > 1.0e-12F ? model.config.target_std : 1.0F;
@@ -899,10 +949,14 @@ int train_regression_parallel(
       const float target = (y[row_index] - model.config.target_mean) / target_std;
       const float error = dot(row, model.weights.data(), features) + model.bias[0] - target;
       model.errors[static_cast<size_t>(row_index)] = 2.0F * error;
-      total_loss += static_cast<double>(error) * error;
+      if (report_loss) total_loss += static_cast<double>(error) * error;
       bias_gradient += 2.0F * error;
     }
     kr_fortran_gradient_f32(x, model.errors.data(), rows, features, model.gradient.data());
+    if (!values_are_finite(model.gradient.data(), features) ||
+        !std::isfinite(bias_gradient) || !std::isfinite(total_loss)) {
+      return fail("parallel Fortran regression pre-update guard rejected the batch");
+    }
     const float inverse = 1.0F / static_cast<float>(rows);
     update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
                    inverse, model.config.weight_decay, features);
@@ -911,9 +965,7 @@ int train_regression_parallel(
     return std::isfinite(*loss) ? 1 : fail("Fortran regression loss became non-finite");
   }
 #endif
-  model.parallel_gradient.assign(static_cast<size_t>(threads) * features, 0.0F);
-  model.parallel_bias.assign(threads, 0.0F);
-  model.parallel_loss.assign(threads, 0.0);
+  reset_parallel_workspace(model, features, 1U, 0U, threads);
 #pragma omp parallel num_threads(threads)
   {
     const int thread = omp_get_thread_num();
@@ -925,7 +977,7 @@ int train_regression_parallel(
       const float* row = x + static_cast<size_t>(row_index) * features;
       const float target = (y[row_index] - model.config.target_mean) / target_std;
       const float error = dot(row, model.weights.data(), features) + model.bias[0] - target;
-      total_loss += static_cast<double>(error) * error;
+      if (report_loss) total_loss += static_cast<double>(error) * error;
       bias_gradient += 2.0F * error;
       add_scaled(gradient, row, 2.0F * error, features);
     }
@@ -938,39 +990,48 @@ int train_regression_parallel(
                model.parallel_gradient.data() + static_cast<size_t>(thread) * features,
                1.0F, features);
   }
-  const float inverse = 1.0F / static_cast<float>(rows);
-  update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
-                 inverse, model.config.weight_decay, features);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
   for (int thread = 0; thread < threads; ++thread) {
     bias_gradient += model.parallel_bias[thread];
     total_loss += model.parallel_loss[thread];
   }
+  if (!values_are_finite(model.gradient.data(), features) ||
+      !std::isfinite(bias_gradient) || !std::isfinite(total_loss)) {
+    return fail("parallel regression pre-update guard rejected the batch");
+  }
+  const float inverse = 1.0F / static_cast<float>(rows);
+  update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
+                 inverse, model.config.weight_decay, features);
   model.bias[0] -= model.config.learning_rate * bias_gradient * inverse;
   *loss = static_cast<float>(total_loss / static_cast<double>(rows));
   return std::isfinite(*loss) ? 1 : fail("parallel regression loss became non-finite");
 }
 #endif
 
-int train_binary(Model& model, const float* x, const float* y, size_t rows, float* loss) {
+int train_binary(
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
+#if defined(_OPENMP)
+  if (model.config.threads > 1 && rows * features >= 4194304U &&
+      parallel_gradient_fits(model, features, rows)) {
+    return train_binary_parallel(model, x, y, rows, loss, report_loss);
+  }
+#endif
 #if KR_HAS_FORTRAN_NUMERIC
-  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC) && !prefer_fused_simd(rows, features)) {
     model.errors.resize(rows);
+    int status = 0;
     kr_fortran_binary_train_f32(
         x, y, rows, features, model.weights.data(), model.bias.data(), model.config.learning_rate,
-        model.config.weight_decay, model.errors.data(), model.gradient.data(), loss);
+        model.config.weight_decay, model.errors.data(), model.gradient.data(), report_loss ? 1 : 0,
+        loss, &status);
+    if (status != 0) return fail("Fortran binary pre-update guard rejected the batch");
     return std::isfinite(*loss) ? 1 : fail("Fortran binary loss became non-finite");
   }
 #endif
-#if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features >= 1048576U) {
-    return train_binary_parallel(model, x, y, rows, loss);
-  }
-#endif
-  // This fallback is retained for diagnostic component masking and builds
-  // without gfortran; the normal native path above is owned by Fortran.
+  // AVX2/FMA owns large x86 batches after runtime feature detection. Fortran
+  // remains the portable dense kernel and owns the weight update when enabled.
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
   float bias_gradient = 0.0F;
   double total_loss = 0.0;
@@ -978,9 +1039,13 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
     const float* row = x + row_index * features;
     const float probability = sigmoid(dot(row, model.weights.data(), features) + model.bias[0]);
     const float error = probability - y[row_index];
-    total_loss += binary_cross_entropy(y[row_index], probability);
+    if (report_loss) total_loss += binary_cross_entropy(y[row_index], probability);
     bias_gradient += error;
     add_scaled(model.gradient.data(), row, error, features);
+  }
+  if (!values_are_finite(model.gradient.data(), features) ||
+      !std::isfinite(bias_gradient) || !std::isfinite(total_loss)) {
+    return fail("SIMD binary pre-update guard rejected the batch");
   }
   const float inverse = 1.0F / static_cast<float>(rows);
   update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
@@ -990,21 +1055,25 @@ int train_binary(Model& model, const float* x, const float* y, size_t rows, floa
   return std::isfinite(*loss) ? 1 : fail("binary loss became non-finite");
 }
 
-int train_regression(Model& model, const float* x, const float* y, size_t rows, float* loss) {
+int train_regression(
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
+#if defined(_OPENMP)
+  if (model.config.threads > 1 && rows * features >= 4194304U &&
+      parallel_gradient_fits(model, features, rows)) {
+    return train_regression_parallel(model, x, y, rows, loss, report_loss);
+  }
+#endif
 #if KR_HAS_FORTRAN_NUMERIC
-  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+  if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC) && !prefer_fused_simd(rows, features)) {
     model.errors.resize(rows);
+    int status = 0;
     kr_fortran_regression_train_f32(
         x, y, rows, features, model.weights.data(), model.bias.data(), model.config.learning_rate,
         model.config.weight_decay, model.config.target_mean, model.config.target_std,
-        model.errors.data(), model.gradient.data(), loss);
+        model.errors.data(), model.gradient.data(), report_loss ? 1 : 0, loss, &status);
+    if (status != 0) return fail("Fortran regression pre-update guard rejected the batch");
     return std::isfinite(*loss) ? 1 : fail("Fortran regression loss became non-finite");
-  }
-#endif
-#if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features >= 1048576U) {
-    return train_regression_parallel(model, x, y, rows, loss);
   }
 #endif
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
@@ -1015,9 +1084,13 @@ int train_regression(Model& model, const float* x, const float* y, size_t rows, 
     const float* row = x + row_index * features;
     const float target = (y[row_index] - model.config.target_mean) / target_std;
     const float error = dot(row, model.weights.data(), features) + model.bias[0] - target;
-    total_loss += static_cast<double>(error) * error;
+    if (report_loss) total_loss += static_cast<double>(error) * error;
     bias_gradient += 2.0F * error;
     add_scaled(model.gradient.data(), row, 2.0F * error, features);
+  }
+  if (!values_are_finite(model.gradient.data(), features) ||
+      !std::isfinite(bias_gradient) || !std::isfinite(total_loss)) {
+    return fail("SIMD regression pre-update guard rejected the batch");
   }
   const float inverse = 1.0F / static_cast<float>(rows);
   update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
@@ -1033,16 +1106,14 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
   const size_t classes = model.config.classes;
   const size_t weight_values = model.weights.size();
   const int threads = configured_threads(model, rows);
-  model.parallel_gradient.assign(static_cast<size_t>(threads) * weight_values, 0.0F);
-  model.parallel_bias.assign(static_cast<size_t>(threads) * classes, 0.0F);
-  model.parallel_loss.assign(static_cast<size_t>(threads), 0.0);
+  reset_parallel_workspace(model, weight_values, classes, classes, threads);
   std::atomic<bool> invalid_target{false};
 #pragma omp parallel num_threads(threads)
   {
     const int thread = omp_get_thread_num();
     float* gradient = model.parallel_gradient.data() + static_cast<size_t>(thread) * weight_values;
     float* bias_gradient = model.parallel_bias.data() + static_cast<size_t>(thread) * classes;
-    std::vector<float> scratch(classes);
+    float* scratch = model.parallel_scratch.data() + static_cast<size_t>(thread) * classes;
     double total_loss = 0.0;
 #pragma omp for schedule(static)
     for (ptrdiff_t row_index = 0; row_index < static_cast<ptrdiff_t>(rows); ++row_index) {
@@ -1093,6 +1164,10 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
     }
     total_loss += model.parallel_loss[thread];
   }
+  if (!values_are_finite(model.gradient.data(), weight_values) ||
+      !values_are_finite(model.bias_gradient.data(), classes) || !std::isfinite(total_loss)) {
+    return fail("parallel multiclass pre-update guard rejected the batch");
+  }
   const float inverse = 1.0F / static_cast<float>(rows);
   update_weights(model.weights.data(), model.gradient.data(), model.config.learning_rate,
                  inverse, model.config.weight_decay, weight_values);
@@ -1107,6 +1182,12 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
 int train_multiclass(Model& model, const float* x, const float* y, size_t rows, float* loss) {
   const size_t features = model.config.features;
   const size_t classes = model.config.classes;
+#if defined(_OPENMP)
+  if (model.config.threads > 1 && rows * features * classes >= 131072U &&
+      parallel_gradient_fits(model, model.weights.size(), rows)) {
+    return train_multiclass_parallel(model, x, y, rows, loss);
+  }
+#endif
 #if KR_HAS_FORTRAN_NUMERIC
   if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
     int status = 0;
@@ -1115,15 +1196,14 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
         model.config.learning_rate, model.config.weight_decay, model.scratch.data(),
         model.gradient.data(), model.bias_gradient.data(), loss, &status);
     if (status == 1) return fail("multiclass target is outside configured class range");
+    if (status == 3) return fail("Fortran multiclass pre-update guard rejected the batch");
     if (status != 0 || !std::isfinite(*loss)) return fail("Fortran multiclass update became non-finite");
     return 1;
   }
 #endif
 #if defined(_OPENMP)
-  constexpr size_t max_parallel_gradient_values = 8U * 1024U * 1024U;
-  const size_t threads = static_cast<size_t>(configured_threads(model, rows));
   if (model.config.threads > 1 && rows * features >= 1048576U &&
-      model.weights.size() <= max_parallel_gradient_values / std::max<size_t>(1U, threads)) {
+      parallel_gradient_fits(model, model.weights.size(), rows)) {
     return train_multiclass_parallel(model, x, y, rows, loss);
   }
 #endif
@@ -1170,11 +1250,61 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
   return std::isfinite(*loss) ? 1 : fail("multiclass loss became non-finite");
 }
 
+int train_model_step(
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
+  const int outcome = model.config.task == KR_TASK_BINARY
+      ? train_binary(model, x, y, rows, loss, report_loss)
+      : model.config.task == KR_TASK_MULTICLASS
+          ? train_multiclass(model, x, y, rows, loss)
+          : train_regression(model, x, y, rows, loss, report_loss);
+  if (outcome != 0 && ((report_loss && !std::isfinite(*loss)) || !model_is_finite(model))) {
+    return fail("native update rejected: non-finite parameters or loss");
+  }
+  return outcome;
+}
+
+int train_random_step_impl(
+    Model& model, const float* x, const float* y, size_t rows, size_t batch_size,
+    float* loss, bool report_loss) {
+  if (x == nullptr || y == nullptr || loss == nullptr || rows == 0 ||
+      batch_size == 0 || batch_size > 1048576U) {
+    return fail("invalid native random train_step arguments");
+  }
+  try {
+    model.batch_x.resize(batch_size * model.config.features);
+    model.batch_y.resize(batch_size);
+    model.batch_indices.resize(batch_size);
+  } catch (const std::bad_alloc&) {
+    return fail("native random batch does not fit in memory");
+  }
+  const size_t features = model.config.features;
+  for (size_t sample = 0; sample < batch_size; ++sample) {
+    const size_t selected = static_cast<size_t>(next_random(model.rng_state) % rows);
+    model.batch_indices[sample] = selected;
+    model.batch_y[sample] = y[selected];
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    if (kr_zig_gather_rows_f32(x, rows, features, model.batch_indices.data(), batch_size,
+                               model.batch_x.data()) == 0U) {
+      return fail("Zig batch gather rejected the selected rows");
+    }
+  } else
+#endif
+  {
+    for (size_t sample = 0; sample < batch_size; ++sample) {
+      const float* source = x + model.batch_indices[sample] * features;
+      std::copy(source, source + features, model.batch_x.data() + sample * features);
+    }
+  }
+  return train_model_step(model, model.batch_x.data(), model.batch_y.data(), batch_size, loss, report_loss);
+}
+
 }  // namespace
 
 extern "C" {
 
-const char* kr_core_version(void) { return "kernelyra-native/3.1-dual-core"; }
+const char* kr_core_version(void) { return "kernelyra-native/3.4-adaptive-pack-core"; }
 
 const char* kr_core_features(void) {
 #if KR_X86_GNU_SIMD
@@ -1197,7 +1327,7 @@ const char* kr_core_features(void) {
 
 const char* kr_core_components(void) {
   if (compiled_component_mask == KR_COMPONENT_ALL) {
-    return "cpp-abi+rust-policy+fortran-training+zig-memory";
+    return "cpp-abi+rust-policy+fortran-training-guard+zig-bounded-memory";
   }
   if (compiled_component_mask == 0U) return "cpp-fallback";
   return "cpp+partial-native-components";
@@ -1621,6 +1751,111 @@ void kr_memory_free_aligned(void* pointer) {
 #endif
 }
 
+void* kr_memory_arena_create(size_t capacity_bytes, size_t alignment) {
+  last_error.clear();
+  if (capacity_bytes == 0U || alignment < alignof(void*) || (alignment & (alignment - 1U)) != 0U) {
+    fail("arena capacity must be positive and alignment must be a power of two");
+    return nullptr;
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    void* handle = kr_zig_arena_create(capacity_bytes, alignment);
+    if (handle != nullptr) return handle;
+    fail("Zig arena allocation failed");
+    return nullptr;
+  }
+#endif
+  fail("native monotonic arena requires the Zig memory component");
+  return nullptr;
+}
+
+void kr_memory_arena_destroy(void* handle) {
+#if KR_HAS_ZIG_MEMORY
+  if (handle != nullptr) kr_zig_arena_destroy(handle);
+#else
+  (void)handle;
+#endif
+}
+
+void* kr_memory_arena_acquire(void* handle, size_t bytes, size_t alignment) {
+  last_error.clear();
+  if (handle == nullptr || bytes == 0U || alignment < alignof(void*) ||
+      (alignment & (alignment - 1U)) != 0U) {
+    fail("arena acquire requires a handle, positive bytes and power-of-two alignment");
+    return nullptr;
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    void* pointer = kr_zig_arena_acquire(handle, bytes, alignment);
+    if (pointer != nullptr) return pointer;
+    fail("Zig arena capacity or alignment limit exceeded");
+    return nullptr;
+  }
+#endif
+  fail("native monotonic arena requires the Zig memory component");
+  return nullptr;
+}
+
+size_t kr_memory_arena_mark(const void* handle) {
+#if KR_HAS_ZIG_MEMORY
+  if (handle != nullptr && component_enabled(KR_COMPONENT_ZIG_MEMORY)) return kr_zig_arena_mark(handle);
+#else
+  (void)handle;
+#endif
+  return 0U;
+}
+
+int kr_memory_arena_rewind(void* handle, size_t mark) {
+  last_error.clear();
+  if (handle == nullptr) return fail("arena rewind requires a handle");
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY) && kr_zig_arena_rewind(handle, mark) != 0U) return 1;
+#endif
+  return fail("arena rewind mark is invalid or Zig memory is disabled");
+}
+
+void kr_memory_arena_reset(void* handle) {
+#if KR_HAS_ZIG_MEMORY
+  if (handle != nullptr && component_enabled(KR_COMPONENT_ZIG_MEMORY)) kr_zig_arena_reset(handle);
+#else
+  (void)handle;
+#endif
+}
+
+int kr_memory_arena_get_stats(const void* handle, kr_memory_arena_stats* output) {
+  last_error.clear();
+  if (handle == nullptr || output == nullptr) return fail("arena stats require a handle and output buffer");
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    output->capacity_bytes = kr_zig_arena_capacity(handle);
+    output->used_bytes = kr_zig_arena_used(handle);
+    output->high_water_bytes = kr_zig_arena_high_water(handle);
+    output->alignment = kr_zig_arena_alignment(handle);
+    output->allocations = kr_zig_arena_allocations(handle);
+    output->failed_allocations = kr_zig_arena_failed_allocations(handle);
+    output->resets = kr_zig_arena_resets(handle);
+    return 1;
+  }
+#endif
+  return fail("native monotonic arena requires the Zig memory component");
+}
+
+int kr_memory_batch_plan_make(
+    size_t capacity_bytes, size_t requested_rows, size_t features, size_t buffer_count,
+    kr_memory_batch_plan* output) {
+  last_error.clear();
+  if (capacity_bytes == 0U || requested_rows == 0U || features == 0U || buffer_count < 2U || output == nullptr) {
+    return fail("batch plan requires positive capacity, rows, features, at least two buffers and an output");
+  }
+#if KR_HAS_ZIG_MEMORY
+  if (component_enabled(KR_COMPONENT_ZIG_MEMORY) &&
+      kr_zig_batch_plan_make(capacity_bytes, requested_rows, features, buffer_count, output) != 0U) {
+    return 1;
+  }
+#endif
+  return fail("batch plan is invalid for the available Zig memory budget");
+}
+
 void* kr_model_create(const kr_model_config* config) {
   last_error.clear();
   if (config == nullptr || !supported_model_abi(config->abi_version)) {
@@ -1671,51 +1906,15 @@ int kr_model_train_step(void* handle, const float* x, const float* y, size_t row
   if (!valid_model(model) || x == nullptr || y == nullptr || loss == nullptr || rows == 0) {
     return fail("invalid native train_step arguments");
   }
-  int outcome = model->config.task == KR_TASK_BINARY ? train_binary(*model, x, y, rows, loss) :
-      model->config.task == KR_TASK_MULTICLASS ? train_multiclass(*model, x, y, rows, loss) :
-      train_regression(*model, x, y, rows, loss);
-  if (outcome != 0 && (!std::isfinite(*loss) || !model_is_finite(*model))) {
-    return fail("native update rejected: non-finite parameters or loss");
-  }
-  return outcome;
+  return train_model_step(*model, x, y, rows, loss, true);
 }
 
 int kr_model_train_random_step(
     void* handle, const float* x, const float* y, size_t rows, size_t batch_size, float* loss) {
   last_error.clear();
   Model* model = static_cast<Model*>(handle);
-  if (!valid_model(model) || x == nullptr || y == nullptr || loss == nullptr ||
-      rows == 0 || batch_size == 0 || batch_size > 1048576U) {
-    return fail("invalid native random train_step arguments");
-  }
-  try {
-    model->batch_x.resize(batch_size * model->config.features);
-    model->batch_y.resize(batch_size);
-    model->batch_indices.resize(batch_size);
-  } catch (const std::bad_alloc&) {
-    return fail("native random batch does not fit in memory");
-  }
-  const size_t features = model->config.features;
-  for (size_t sample = 0; sample < batch_size; ++sample) {
-    const size_t selected = static_cast<size_t>(next_random(model->rng_state) % rows);
-    model->batch_indices[sample] = selected;
-    model->batch_y[sample] = y[selected];
-  }
-#if KR_HAS_ZIG_MEMORY
-  if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
-    if (kr_zig_gather_rows_f32(x, rows, features, model->batch_indices.data(), batch_size,
-                                model->batch_x.data()) == 0U) {
-      return fail("Zig batch gather rejected the selected rows");
-    }
-  } else
-#endif
-  {
-    for (size_t sample = 0; sample < batch_size; ++sample) {
-      const float* source = x + model->batch_indices[sample] * features;
-      std::copy(source, source + features, model->batch_x.data() + sample * features);
-    }
-  }
-  return kr_model_train_step(handle, model->batch_x.data(), model->batch_y.data(), batch_size, loss);
+  if (!valid_model(model)) return fail("invalid native random train_step model");
+  return train_random_step_impl(*model, x, y, rows, batch_size, loss, true);
 }
 
 int kr_model_train_random_steps(
@@ -1727,8 +1926,27 @@ int kr_model_train_random_steps(
     size_t steps,
     float* loss) {
   if (steps == 0 || steps > 1000000U) return fail("native random train step count is outside bounds");
+  last_error.clear();
+  Model* model = static_cast<Model*>(handle);
+  if (!valid_model(model)) return fail("invalid native random train_steps model");
   for (size_t step = 0; step < steps; ++step) {
-    if (!kr_model_train_random_step(handle, x, y, rows, batch_size, loss)) return 0;
+    const bool report_loss = step + 1U == steps;
+    if (!train_random_step_impl(*model, x, y, rows, batch_size, loss, report_loss)) return 0;
+  }
+  return 1;
+}
+
+int kr_model_train_steps(
+    void* handle, const float* x, const float* y, size_t rows, size_t steps, float* loss) {
+  if (steps == 0 || steps > 1000000U) return fail("native train step count is outside bounds");
+  last_error.clear();
+  Model* model = static_cast<Model*>(handle);
+  if (!valid_model(model) || x == nullptr || y == nullptr || loss == nullptr || rows == 0) {
+    return fail("invalid native train_steps arguments");
+  }
+  for (size_t step = 0; step < steps; ++step) {
+    const bool report_loss = step + 1U == steps;
+    if (!train_model_step(*model, x, y, rows, loss, report_loss)) return 0;
   }
   return 1;
 }

@@ -2,6 +2,8 @@
 // C, C++, Rust, Go, C# and Python can share the same buffers without copies.
 
 const allocator = @import("memory_allocator.zig");
+const arena = @import("memory_arena.zig");
+const budget = @import("memory_budget.zig");
 const arithmetic = @import("memory_arithmetic.zig");
 const guard = @import("memory_guard.zig");
 const normalize = @import("memory_normalize.zig");
@@ -16,6 +18,51 @@ export fn kr_zig_alloc_aligned(bytes: usize, alignment: usize) ?*anyopaque {
 
 export fn kr_zig_free_aligned(pointer: ?*anyopaque) void {
     allocator.free(pointer);
+}
+
+export fn kr_zig_arena_create(capacity: usize, alignment: usize) ?*arena.Arena {
+    return arena.create(capacity, alignment);
+}
+
+export fn kr_zig_arena_destroy(handle: ?*arena.Arena) void {
+    arena.destroy(handle);
+}
+
+export fn kr_zig_arena_acquire(handle: ?*arena.Arena, bytes: usize, alignment: usize) ?*anyopaque {
+    return arena.acquire(handle, bytes, alignment);
+}
+
+export fn kr_zig_arena_mark(handle: ?*const arena.Arena) usize {
+    return arena.mark(handle);
+}
+
+export fn kr_zig_arena_rewind(handle: ?*arena.Arena, offset: usize) u32 {
+    return if (arena.rewind(handle, offset)) 1 else 0;
+}
+
+export fn kr_zig_arena_reset(handle: ?*arena.Arena) void {
+    arena.reset(handle);
+}
+
+export fn kr_zig_arena_capacity(handle: ?*const arena.Arena) usize { return arena.capacityBytes(handle); }
+export fn kr_zig_arena_used(handle: ?*const arena.Arena) usize { return arena.used(handle); }
+export fn kr_zig_arena_high_water(handle: ?*const arena.Arena) usize { return arena.highWater(handle); }
+export fn kr_zig_arena_alignment(handle: ?*const arena.Arena) usize { return arena.arenaAlignment(handle); }
+export fn kr_zig_arena_allocations(handle: ?*const arena.Arena) u64 { return arena.allocations(handle); }
+export fn kr_zig_arena_failed_allocations(handle: ?*const arena.Arena) u64 { return arena.failedAllocations(handle); }
+export fn kr_zig_arena_resets(handle: ?*const arena.Arena) u64 { return arena.resets(handle); }
+
+export fn kr_zig_batch_plan_make(
+    capacity_bytes: usize,
+    requested_rows: usize,
+    features: usize,
+    buffer_count: usize,
+    output: ?*budget.BatchPlan,
+) u32 {
+    const plan = budget.makeBatchPlan(capacity_bytes, requested_rows, features, buffer_count) orelse return 0;
+    const destination = output orelse return 0;
+    destination.* = plan;
+    return 1;
 }
 
 export fn kr_zig_normalize_f32(

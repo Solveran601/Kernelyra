@@ -492,9 +492,16 @@ class AutoTrainer:
         chunk_policy = dict(data_contract["chunk_policy"])
         warnings.extend(str(item) for item in data_health["warnings"])
         if split_policy["strategy"] == "context":
-            warnings.append(
-                "A context-like column was detected; group-exclusive splitting is not implemented in this alpha."
-            )
+            if source.is_dir() or source.suffix.lower() in streaming_formats:
+                if data_mode != "stream":
+                    data_mode = "stream"
+                    warnings.append(
+                        "Context-preserving splitting selected the external streaming path so one group cannot cross train, validation and test."
+                    )
+            else:
+                warnings.append(
+                    "A context-like column was detected, but this format has no streaming group splitter; do not treat a random split as leakage-safe."
+                )
         return TrainingPlan(
             dataset=str(source),
             target=str(target) if target is not None else None,

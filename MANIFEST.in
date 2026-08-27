@@ -6,6 +6,7 @@ recursive-include scripts *.py
 include scripts/install_powershell_module.ps1
 recursive-include powershell *.psm1 *.psd1
 recursive-include assets/brand *.png *.svg
+recursive-include benchmarks/cpu *.md *.py *.json
 recursive-include constraints *.txt
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90
 recursive-include sdks *.h *.c *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.rs *.toml *.lock *.md *.swift *.rb *.txt

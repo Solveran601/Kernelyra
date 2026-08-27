@@ -73,7 +73,14 @@ class NativeBackend(NumpyBackend):
         if config.dataset_spec:
             try:
                 arena_bytes = int(config.resource_limits.get("arena_bytes") or 0) or None
-                native_source = _NativeStreamingBundle(config.dataset_spec, arena_bytes=arena_bytes)
+                # NativeNumericCsvStream assigns split membership from record
+                # positions.  Group-exclusive data must stay on the shared
+                # stream contract, which assigns one context to one split.
+                native_source = (
+                    None
+                    if config.dataset_spec.get("context_column")
+                    else _NativeStreamingBundle(config.dataset_spec, arena_bytes=arena_bytes)
+                )
             except NativeCoreError:
                 # Missing values, categorical features and non-numeric targets
                 # remain supported by the general bounded-memory source.

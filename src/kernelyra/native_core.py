@@ -53,6 +53,32 @@ class _TextChunk(ctypes.Structure):
     ]
 
 
+class _ArenaStats(ctypes.Structure):
+    _fields_ = [
+        ("capacity_bytes", ctypes.c_size_t),
+        ("used_bytes", ctypes.c_size_t),
+        ("high_water_bytes", ctypes.c_size_t),
+        ("alignment", ctypes.c_size_t),
+        ("allocations", ctypes.c_uint64),
+        ("failed_allocations", ctypes.c_uint64),
+        ("resets", ctypes.c_uint64),
+    ]
+
+
+class _BatchPlan(ctypes.Structure):
+    _fields_ = [
+        ("capacity_bytes", ctypes.c_size_t),
+        ("requested_rows", ctypes.c_size_t),
+        ("planned_rows", ctypes.c_size_t),
+        ("maximum_rows", ctypes.c_size_t),
+        ("features", ctypes.c_size_t),
+        ("buffer_count", ctypes.c_size_t),
+        ("bytes_per_row", ctypes.c_size_t),
+        ("required_bytes", ctypes.c_size_t),
+        ("fits", ctypes.c_uint32),
+    ]
+
+
 def _library_names() -> tuple[str, ...]:
     system = platform.system().lower()
     if system == "windows":
@@ -146,9 +172,11 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "loss_multiclass.f90",
                 "loss_regression.f90",
                 "gradient_layout.f90",
+                "workspace_kernels.f90",
                 "vector_kernels.f90",
                 "gradient_kernels.f90",
                 "optimizer_clip.f90",
+                "training_guard.f90",
                 "training_state.f90",
                 "matrix_scores.f90",
                 "multiclass_training.f90",
@@ -358,6 +386,41 @@ class NativeCore:
         library.kr_memory_alloc_aligned.argtypes = [ctypes.c_size_t, ctypes.c_size_t]
         library.kr_memory_alloc_aligned.restype = ctypes.c_void_p
         library.kr_memory_free_aligned.argtypes = [ctypes.c_void_p]
+        self._monotonic_arena_available = all(
+            hasattr(library, name)
+            for name in (
+                "kr_memory_arena_create",
+                "kr_memory_arena_destroy",
+                "kr_memory_arena_acquire",
+                "kr_memory_arena_mark",
+                "kr_memory_arena_rewind",
+                "kr_memory_arena_reset",
+                "kr_memory_arena_get_stats",
+            )
+        )
+        self._batch_planner_available = hasattr(library, "kr_memory_batch_plan_make")
+        if self._monotonic_arena_available:
+            library.kr_memory_arena_create.argtypes = [ctypes.c_size_t, ctypes.c_size_t]
+            library.kr_memory_arena_create.restype = ctypes.c_void_p
+            library.kr_memory_arena_destroy.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_acquire.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+            library.kr_memory_arena_acquire.restype = ctypes.c_void_p
+            library.kr_memory_arena_mark.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_mark.restype = ctypes.c_size_t
+            library.kr_memory_arena_rewind.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            library.kr_memory_arena_rewind.restype = ctypes.c_int
+            library.kr_memory_arena_reset.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_get_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ArenaStats)]
+            library.kr_memory_arena_get_stats.restype = ctypes.c_int
+        if self._batch_planner_available:
+            library.kr_memory_batch_plan_make.argtypes = [
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(_BatchPlan),
+            ]
+            library.kr_memory_batch_plan_make.restype = ctypes.c_int
         library.kr_memory_normalize_f32.argtypes = [
             ctypes.POINTER(ctypes.c_float),
             ctypes.c_size_t,
@@ -516,6 +579,17 @@ class NativeCore:
             ctypes.POINTER(ctypes.c_float),
         ]
         library.kr_model_train_random_steps.restype = ctypes.c_int
+        self._model_train_steps_available = hasattr(library, "kr_model_train_steps")
+        if self._model_train_steps_available:
+            library.kr_model_train_steps.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+            library.kr_model_train_steps.restype = ctypes.c_int
         library.kr_model_predict.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -969,6 +1043,95 @@ class NativeCore:
             values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size
         )
 
+    @property
+    def monotonic_arena_available(self) -> bool:
+        """Whether this DLL contains the bounded Zig monotonic-arena ABI."""
+        return self._monotonic_arena_available
+
+    @property
+    def batch_planner_available(self) -> bool:
+        """Whether the DLL can prove a float32 batch fits a bounded arena."""
+        return self._batch_planner_available
+
+    def plan_memory_batch(
+        self, capacity_bytes: int, requested_rows: int, features: int, *, buffer_count: int = 2
+    ) -> dict[str, int | bool]:
+        if not self._batch_planner_available:
+            raise NativeCoreError("This native core does not include the Zig batch memory planner")
+        output = _BatchPlan()
+        if not self.library.kr_memory_batch_plan_make(
+            int(capacity_bytes), int(requested_rows), int(features), int(buffer_count), ctypes.byref(output)
+        ):
+            raise self.error()
+        return {
+            "capacity_bytes": int(output.capacity_bytes),
+            "requested_rows": int(output.requested_rows),
+            "planned_rows": int(output.planned_rows),
+            "maximum_rows": int(output.maximum_rows),
+            "features": int(output.features),
+            "buffer_count": int(output.buffer_count),
+            "bytes_per_row": int(output.bytes_per_row),
+            "required_bytes": int(output.required_bytes),
+            "fits": bool(output.fits),
+        }
+
+    def create_memory_arena(self, capacity_bytes: int, alignment: int = 64) -> int:
+        if not self._monotonic_arena_available:
+            raise NativeCoreError("This native core does not include the Zig monotonic arena")
+        capacity, requested_alignment = int(capacity_bytes), int(alignment)
+        if capacity < 1 or requested_alignment < ctypes.sizeof(ctypes.c_void_p) or requested_alignment & (requested_alignment - 1):
+            raise NativeCoreError("Arena capacity must be positive and alignment must be a power of two")
+        handle = int(self.library.kr_memory_arena_create(capacity, requested_alignment) or 0)
+        if not handle:
+            raise self.error()
+        return handle
+
+    def destroy_memory_arena(self, handle: int) -> None:
+        if self._monotonic_arena_available and handle:
+            self.library.kr_memory_arena_destroy(ctypes.c_void_p(handle))
+
+    def memory_arena_acquire(self, handle: int, bytes_count: int, alignment: int = 64) -> int:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        pointer = int(
+            self.library.kr_memory_arena_acquire(ctypes.c_void_p(handle), int(bytes_count), int(alignment)) or 0
+        )
+        if not pointer:
+            raise self.error()
+        return pointer
+
+    def memory_arena_mark(self, handle: int) -> int:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        return int(self.library.kr_memory_arena_mark(ctypes.c_void_p(handle)))
+
+    def memory_arena_rewind(self, handle: int, mark: int) -> None:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        if not self.library.kr_memory_arena_rewind(ctypes.c_void_p(handle), int(mark)):
+            raise self.error()
+
+    def reset_memory_arena(self, handle: int) -> None:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        self.library.kr_memory_arena_reset(ctypes.c_void_p(handle))
+
+    def memory_arena_stats(self, handle: int) -> dict[str, int]:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        stats = _ArenaStats()
+        if not self.library.kr_memory_arena_get_stats(ctypes.c_void_p(handle), ctypes.byref(stats)):
+            raise self.error()
+        return {
+            "capacity_bytes": int(stats.capacity_bytes),
+            "used_bytes": int(stats.used_bytes),
+            "high_water_bytes": int(stats.high_water_bytes),
+            "alignment": int(stats.alignment),
+            "allocations": int(stats.allocations),
+            "failed_allocations": int(stats.failed_allocations),
+            "resets": int(stats.resets),
+        }
+
     def error(self) -> NativeCoreError:
         value = self.library.kr_last_error()
         return NativeCoreError(value.decode("utf-8", "replace") if value else "Unknown native core error")
@@ -993,6 +1156,11 @@ class NativeTensorArena:
         self.alignment = int(alignment)
         self._buffers: dict[tuple[str, tuple[int, ...]], tuple[int, Any, np.ndarray]] = {}
         self._allocated_bytes = 0
+        self._arena_handle = (
+            self.core.create_memory_arena(self.byte_budget, self.alignment)
+            if self.byte_budget is not None and self.core.monotonic_arena_available
+            else None
+        )
         self._closed = False
 
     def acquire_float32(self, shape: tuple[int, ...], *, tag: str = "default") -> np.ndarray:
@@ -1007,12 +1175,16 @@ class NativeTensorArena:
             return previous[2]
         elements = math.prod(normalized_shape)
         byte_count = elements * ctypes.sizeof(ctypes.c_float)
-        if self.byte_budget is not None and self._allocated_bytes + byte_count > self.byte_budget:
+        if self.byte_budget is not None and self._arena_handle is None and self._allocated_bytes + byte_count > self.byte_budget:
             raise NativeCoreError(
                 f"Native tensor arena budget exceeded: need {byte_count} bytes, "
                 f"allocated {self._allocated_bytes}, budget {self.byte_budget}"
             )
-        address = int(self.core.library.kr_memory_alloc_aligned(byte_count, self.alignment) or 0)
+        address = (
+            self.core.memory_arena_acquire(self._arena_handle, byte_count, self.alignment)
+            if self._arena_handle is not None
+            else int(self.core.library.kr_memory_alloc_aligned(byte_count, self.alignment) or 0)
+        )
         if not address:
             raise self.core.error()
         raw = (ctypes.c_float * elements).from_address(address)
@@ -1021,8 +1193,22 @@ class NativeTensorArena:
         self._allocated_bytes += byte_count
         return array
 
+    def has_float32(self, shape: tuple[int, ...], *, tag: str = "default") -> bool:
+        """Return whether the tagged shape already has a reusable lease."""
+        normalized_shape = tuple(int(value) for value in shape)
+        return (str(tag), normalized_shape) in self._buffers
+
     @property
     def stats(self) -> dict[str, int]:
+        if self._arena_handle is not None:
+            native = self.core.memory_arena_stats(self._arena_handle)
+            return {
+                **native,
+                "allocated_bytes": native["used_bytes"],
+                "reserved_bytes": native["capacity_bytes"],
+                "buffers": len(self._buffers),
+                "byte_budget": self.byte_budget or 0,
+            }
         return {
             "alignment": self.alignment,
             "allocated_bytes": self._allocated_bytes,
@@ -1030,11 +1216,41 @@ class NativeTensorArena:
             "byte_budget": self.byte_budget or 0,
         }
 
+    def mark(self) -> int:
+        """Return a native lease mark; later rewind/reset invalidates released views."""
+        if self._arena_handle is None:
+            return self._allocated_bytes
+        return self.core.memory_arena_mark(self._arena_handle)
+
+    def rewind(self, mark: int) -> None:
+        """Release all arena leases after ``mark`` and invalidate cached views."""
+        if self._closed:
+            raise NativeCoreError("Native tensor arena is closed")
+        if self._arena_handle is None:
+            raise NativeCoreError("Rewind requires a native monotonic arena with byte_budget")
+        self.core.memory_arena_rewind(self._arena_handle, int(mark))
+        self._buffers.clear()
+        self._allocated_bytes = int(mark)
+
+    def reset(self) -> None:
+        """Release all leases in O(1); all previously returned views are invalid."""
+        if self._closed:
+            raise NativeCoreError("Native tensor arena is closed")
+        if self._arena_handle is None:
+            raise NativeCoreError("Reset requires a native monotonic arena with byte_budget")
+        self.core.reset_memory_arena(self._arena_handle)
+        self._buffers.clear()
+        self._allocated_bytes = 0
+
     def close(self) -> None:
         if self._closed:
             return
-        for address, _, _ in self._buffers.values():
-            self.core.library.kr_memory_free_aligned(ctypes.c_void_p(address))
+        if self._arena_handle is not None:
+            self.core.destroy_memory_arena(self._arena_handle)
+            self._arena_handle = None
+        else:
+            for address, _, _ in self._buffers.values():
+                self.core.library.kr_memory_free_aligned(ctypes.c_void_p(address))
         self._buffers.clear()
         self._allocated_bytes = 0
         self._closed = True
@@ -1146,6 +1362,32 @@ class NativeModel:
         if not ok:
             raise self.core.error()
         return float(loss.value)
+
+    def train_steps(self, x: np.ndarray, y: np.ndarray, steps: int) -> float:
+        """Repeat a full-batch update through one native ABI call."""
+        rows = np.ascontiguousarray(x, dtype=np.float32)
+        targets = np.ascontiguousarray(y, dtype=np.float32).reshape(-1)
+        if rows.ndim != 2 or rows.shape != (len(targets), self.features) or len(targets) == 0:
+            raise NativeCoreError("Native train batch shape mismatch")
+        if not 1 <= steps <= 1_000_000:
+            raise NativeCoreError("Native train step count is outside bounds")
+        if not self.core._model_train_steps_available:
+            loss = 0.0
+            for _ in range(steps):
+                loss = self.train_step(rows, targets)
+            return loss
+        loss_value = ctypes.c_float()
+        ok = self.core.library.kr_model_train_steps(
+            self.handle,
+            self._float_pointer(rows),
+            self._float_pointer(targets),
+            len(targets),
+            int(steps),
+            ctypes.byref(loss_value),
+        )
+        if not ok:
+            raise self.core.error()
+        return float(loss_value.value)
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         rows = np.ascontiguousarray(x, dtype=np.float32)
@@ -1360,6 +1602,26 @@ class NativeNumericCsvStream:
     def next_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
         if batch_size < 1:
             raise NativeCoreError("Native stream batch size must be positive")
+        needs_feature_lease = self._arena is not None and not self._arena.has_float32(
+            (batch_size, self.features), tag=f"{self.split}.x"
+        )
+        needs_target_lease = self._arena is not None and not self._arena.has_float32(
+            (batch_size,), tag=f"{self.split}.y"
+        )
+        if (
+            self._arena is not None
+            and self._arena.byte_budget is not None
+            and (needs_feature_lease or needs_target_lease)
+            and self.core.batch_planner_available
+        ):
+            statistics = self._arena.stats
+            available_bytes = max(0, int(statistics["capacity_bytes"]) - int(statistics["used_bytes"]))
+            plan = self.core.plan_memory_batch(available_bytes, batch_size, self.features, buffer_count=2)
+            if not plan["fits"]:
+                raise NativeCoreError(
+                    f"Native batch of {batch_size} rows needs {plan['required_bytes']} bytes; "
+                    f"the remaining arena budget supports at most {plan['maximum_rows']} rows"
+                )
         if self._arena is not None:
             x = self._arena.acquire_float32((batch_size, self.features), tag=f"{self.split}.x")
             y = self._arena.acquire_float32((batch_size,), tag=f"{self.split}.y")

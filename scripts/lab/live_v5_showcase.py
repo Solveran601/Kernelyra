@@ -1,8 +1,8 @@
 """Run a local, evidence-first Kernelyra v5 demonstration.
 
 It creates a small tabular CSV and JSONL, shows their actual routing, trains
-the CSV with the native backend, and (when a lab DLL is selected) prints text
-context chunks. Text chunking is preprocessing only; v5 has no LLM trainer.
+the CSV with the native backend, then checks UTF-8 text chunking and causal
+loss masks.  The text result is preparation only; v5 has no LLM trainer.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from kernelyra import Config, Engine, __version__
+from kernelyra import Config, Engine, __version__, batch_masked_text_examples, prepare_masked_text_examples
 from kernelyra.ingestion.router import FormatRouter
-from kernelyra.native_core import NativeCore, NativeCoreError, native_core_status
+from kernelyra.native_core import NativeCore, NativeCoreError, NativeTensorArena, native_core_status
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -69,9 +69,10 @@ def text_summary() -> dict[str, Any]:
         }
     return {
         "available": True,
-        "status": "preprocessing only; trainer/loss masking is a future task",
+        "status": "preprocessing and loss-mask preparation only; no LLM trainer is present",
         "source_bytes": len(text.encode("utf-8")),
         "content_reconstructs_source": "".join(item["content"] for item in chunks) == text,
+        "loss_mask": text_mask_summary(text),
         "chunks": [
             {
                 "context_start_byte": item["context_start_byte"],
@@ -82,6 +83,51 @@ def text_summary() -> dict[str, Any]:
             }
             for item in chunks
         ],
+    }
+
+
+def text_mask_summary(text: str) -> dict[str, Any]:
+    """Show the exact repeated-context masking contract without training a model."""
+    examples = prepare_masked_text_examples(
+        text, minimum_bytes=32, target_bytes=64, maximum_bytes=96, overlap_bytes=24
+    )
+    batch = batch_masked_text_examples(examples[: min(2, len(examples))])
+    enabled = int(batch.loss_mask.sum())
+    tokens = int(batch.attention_mask.sum())
+    return {
+        "examples": len(examples),
+        "first_context_prefix_tokens": examples[0].context_prefix_tokens if examples else 0,
+        "later_context_prefix_tokens": examples[1].context_prefix_tokens if len(examples) > 1 else 0,
+        "supervised_target_tokens": enabled,
+        "masked_context_or_padding_tokens": tokens - enabled,
+        "batch_shape": list(batch.input_ids.shape),
+        "contract": "loss_mask=0 for carried context/padding; loss_mask=1 only for new content",
+    }
+
+
+def memory_arena_summary() -> dict[str, Any]:
+    """Exercise the bounded Zig arena and expose its real accounting trace."""
+    try:
+        core = NativeCore()
+        with NativeTensorArena(core=core, byte_budget=4096) as arena:
+            arena.acquire_float32((64,), tag="first")
+            mark = arena.mark()
+            arena.acquire_float32((128,), tag="second")
+            before_rewind = arena.stats
+            arena.rewind(mark)
+            after_rewind = arena.stats
+            arena.acquire_float32((32,), tag="after-rewind")
+            arena.reset()
+            after_reset = arena.stats
+    except NativeCoreError as error:
+        return {"available": False, "reason": str(error)}
+    return {
+        "available": True,
+        "native_core_version": core.version,
+        "contract": "single 4096-byte arena; rewind and reset release leases without reallocating the arena",
+        "before_rewind": before_rewind,
+        "after_rewind": after_rewind,
+        "after_reset": after_reset,
     }
 
 
@@ -123,6 +169,7 @@ def main() -> int:
             "data_mode": result.plan.data_mode,
             "metrics": result.run.metrics,
         },
+        "memory_arena": memory_arena_summary(),
         "text_chunking": text_summary(),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))

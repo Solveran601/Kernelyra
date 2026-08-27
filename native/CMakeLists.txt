@@ -15,9 +15,11 @@ set(KERNELYRA_NATIVE_SOURCES
   core/fortran/loss_multiclass.f90
   core/fortran/loss_regression.f90
   core/fortran/gradient_layout.f90
+  core/fortran/workspace_kernels.f90
   core/fortran/vector_kernels.f90
   core/fortran/gradient_kernels.f90
   core/fortran/optimizer_clip.f90
+  core/fortran/training_guard.f90
   core/fortran/training_state.f90
   core/fortran/matrix_scores.f90
   core/fortran/multiclass_training.f90
@@ -67,6 +69,8 @@ add_custom_command(
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_alignment.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_allocator.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arena.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_budget.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arithmetic.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_clip.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_finite.zig"
@@ -113,5 +117,5 @@ else()
   endif()
 endif()
 
-# Fortran owns dense training arithmetic and Zig owns explicit memory operations.
-# C++ remains a small ABI and streaming bridge around the low-level core.
+# Fortran owns portable dense arithmetic and Zig owns explicit memory operations.
+# The C++ bridge also dispatches runtime-checked AVX2/FMA and OpenMP hot paths.
