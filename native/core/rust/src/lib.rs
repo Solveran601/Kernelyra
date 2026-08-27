@@ -7,10 +7,12 @@
 // namespace is global.  This crate contains no unsafe operations or pointers.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod adaptive;
 mod chunks;
 mod hash;
 mod signature;
 mod split;
+mod text_chunks;
 
 #[unsafe(export_name = "kr_rust_policy_mix_u64")]
 pub extern "C" fn kr_rust_mix_u64(value: u64) -> u64 {
@@ -47,6 +49,30 @@ pub extern "C" fn kr_rust_next_chunk_size(
     )
 }
 
+/// Resource-aware deterministic chunk policy used by the C execution planner.
+#[unsafe(export_name = "kr_rust_policy_next_adaptive_chunk_size")]
+pub extern "C" fn kr_rust_next_adaptive_chunk_size(
+    remaining_records: usize,
+    target_records: usize,
+    minimum_records: usize,
+    maximum_records: usize,
+    sequence: u64,
+    seed: u64,
+    memory_pressure_percent: u32,
+    aggression_percent: u32,
+) -> usize {
+    adaptive::next(
+        remaining_records,
+        target_records,
+        minimum_records,
+        maximum_records,
+        sequence,
+        seed,
+        memory_pressure_percent,
+        aggression_percent,
+    )
+}
+
 /// Classify an untrusted file prefix without parsing or allocating from it.
 ///
 /// # Safety
@@ -78,6 +104,14 @@ mod tests {
         assert!((256..=768).contains(&kr_rust_next_chunk_size(10_000, 512, 256, 768, 3, 99)));
         assert_eq!(kr_rust_next_chunk_size(19, 512, 256, 768, 3, 99), 19);
         assert_eq!(kr_rust_next_chunk_size(10, 0, 1, 2, 0, 0), 0);
+    }
+
+    #[test]
+    fn adaptive_chunks_are_repeatable() {
+        let left = kr_rust_next_adaptive_chunk_size(50_000, 1_024, 256, 2_048, 3, 99, 45, 70);
+        let right = kr_rust_next_adaptive_chunk_size(50_000, 1_024, 256, 2_048, 3, 99, 45, 70);
+        assert_eq!(left, right);
+        assert!((256..=2_048).contains(&left));
     }
 
     #[test]

@@ -7,6 +7,8 @@ import shutil
 import subprocess  # nosec B404
 from typing import Any
 
+from .packs import BUILTIN_ALGORITHM_PACKS, get_algorithm_pack, resolve_pack_name
+
 # Hardware detection invokes only an absolute nvidia-smi path returned by the OS.
 
 
@@ -226,64 +228,8 @@ EXECUTION_MODES: dict[str, dict[str, Any]] = {
 }
 
 
-ALGORITHM_PACKS: dict[str, dict[str, Any]] = {
-    "careful": {
-        "label": "Careful stream",
-        "data_workers": 0,
-        "prefetch": 1,
-        "stream_limit": 128 * 1024 * 1024,
-        "native_thread_fraction": .35,
-        "bulk_step_cap": 8,
-        "arena_bytes": 32 * 1024 * 1024,
-        "chunk_target_records": 1024,
-        "hidden_layers": (32, 16),
-        "strategy": "small variable contiguous chunks with conservative memory reuse",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-    "balanced": {
-        "label": "Balanced stream",
-        "data_workers": 2,
-        "prefetch": 2,
-        "stream_limit": 256 * 1024 * 1024,
-        "native_thread_fraction": .60,
-        "bulk_step_cap": 32,
-        "arena_bytes": 96 * 1024 * 1024,
-        "chunk_target_records": 4096,
-        "hidden_layers": (64, 32),
-        "strategy": "variable chunks and bounded parallel prefetch",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-    "throughput": {
-        "label": "Throughput stream",
-        "data_workers": 6,
-        "prefetch": 4,
-        "stream_limit": 384 * 1024 * 1024,
-        "native_thread_fraction": .85,
-        "bulk_step_cap": 100,
-        "arena_bytes": 256 * 1024 * 1024,
-        "chunk_target_records": 16384,
-        "hidden_layers": (128, 64, 32),
-        "strategy": "larger variable chunks with parallel prefetch and bulk dispatch",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-    "maximum": {
-        "label": "Maximum local throughput",
-        "data_workers": 12,
-        "prefetch": 8,
-        "stream_limit": 2**63 - 1,
-        "native_thread_fraction": 1.0,
-        "bulk_step_cap": 100,
-        "arena_bytes": 768 * 1024 * 1024,
-        "chunk_target_records": 65536,
-        "hidden_layers": (256, 128, 64),
-        "strategy": "large variable chunks and maximum local parallel dispatch within explicit limits",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "hybrid_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-}
+# Compatibility export for callers that only need immutable release defaults.
+ALGORITHM_PACKS = BUILTIN_ALGORITHM_PACKS
 
 _LEGACY_PROFILE_PACK = {
     "auto": "balanced",
@@ -305,16 +251,17 @@ _PACK_PROFILE = {
 def resolve_algorithm_pack(value: str | None) -> str:
     """Validate a public pack name or map a stored legacy profile."""
     selected = str(value or "balanced").strip().lower()
-    if selected in ALGORITHM_PACKS:
-        return selected
     if selected in _LEGACY_PROFILE_PACK:
         return _LEGACY_PROFILE_PACK[selected]
-    raise KeyError(f"Unknown algorithm pack: {value}")
+    return resolve_pack_name(selected)
 
 
 def legacy_profile_for_pack(pack: str) -> str:
     """Return the hidden compatibility profile required by existing backends."""
-    return _PACK_PROFILE[resolve_algorithm_pack(pack)]
+    selected = resolve_algorithm_pack(pack)
+    if selected in _PACK_PROFILE:
+        return _PACK_PROFILE[selected]
+    return str(get_algorithm_pack(selected)["profile"])
 
 
 def resolve_execution_target(value: str | None, hardware: dict[str, Any]) -> str:
@@ -348,7 +295,7 @@ def execution_policy(
     """
     pack = resolve_algorithm_pack(algorithm_pack or profile)
     target = resolve_execution_target(execution_target, hardware)
-    policy = dict(ALGORITHM_PACKS[pack])
+    policy = get_algorithm_pack(pack)
     policy["mode"] = pack
     policy["algorithm_pack"] = pack
     policy["execution"] = target

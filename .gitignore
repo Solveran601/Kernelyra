@@ -21,11 +21,11 @@ pytest-cache-files-*/
 dist/
 build/
 *.egg-info/
-.benchmarks/
 
 # Native build products
 native/cpp/build/
 native/rust/target/
+native/core/rust/target/
 sdks/rust/target/
 sdks/csharp/bin/
 sdks/csharp/obj/

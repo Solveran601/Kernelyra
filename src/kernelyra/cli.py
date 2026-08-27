@@ -15,7 +15,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.5.0a2"
+VERSION = "0.5.0a3"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4
@@ -42,10 +42,27 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("formats", help="List recognized routes and installed trainable adapters")
     advise = commands.add_parser("advise", help="Inspect a file with the bounded Rust format probe and suggest a safe AI data path")
     advise.add_argument("path")
-    commands.add_parser("execution", help="Show CPU/hybrid targets and the four algorithm packs")
+    commands.add_parser("execution", help="Show CPU/hybrid targets and available algorithm packs")
+    packs = commands.add_parser("packs", help="View and customize validated algorithm packs")
+    pack_commands = packs.add_subparsers(dest="pack_command", required=True)
+    pack_commands.add_parser("list", help="Show the pack table")
+    pack_commands.add_parser("path", help="Show the editable custom-pack JSON path")
+    pack_commands.add_parser("algorithms", help="Show algorithms that may be combined in a custom pack")
+    pack_show = pack_commands.add_parser("show", help="Show one effective pack")
+    pack_show.add_argument("name")
+    pack_clone = pack_commands.add_parser("clone", help="Create an editable pack from an existing pack")
+    pack_clone.add_argument("name")
+    pack_clone.add_argument("--from", dest="base", default="balanced")
+    pack_clone.add_argument("--label")
+    for action in ("add-algorithm", "remove-algorithm"):
+        item = pack_commands.add_parser(action)
+        item.add_argument("name")
+        item.add_argument("algorithm")
+    pack_delete = pack_commands.add_parser("delete")
+    pack_delete.add_argument("name")
     tune = commands.add_parser("tune", help="Preview deterministic native execution tuning")
     tune.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
-    tune.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], default="balanced")
+    tune.add_argument("--pack", dest="algorithm_pack", default="balanced")
     tune.add_argument("--profile", help=argparse.SUPPRESS)
     tune.add_argument("--records", type=int, default=100_000)
     tune.add_argument("--features", type=int, default=32)
@@ -67,7 +84,7 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--architecture", choices=["auto", "linear", "mlp", "transformer", "cnn", "vision-transformer", "rnn", "pointnet", "graph-neural-network"])
         item.add_argument("--model-format", choices=["auto", "kernelyra-npz", "pytorch-state", "keras", "gguf", "safetensors", "onnx"])
         item.add_argument("--execution", choices=["auto", "cpu", "hybrid"], help="CPU only or CPU plus detected accelerator")
-        item.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], help="Algorithm pack; resource limits remain explicit")
+        item.add_argument("--pack", dest="algorithm_pack", help="Built-in or custom algorithm pack; resource limits remain explicit")
         item.add_argument("--profile", help=argparse.SUPPRESS)
         item.add_argument("--batch-size", type=int)
         item.add_argument("--accept-batch-risk", action="store_true")
@@ -150,7 +167,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--accept-batch-risk", action="store_true")
     create.add_argument("--max-steps", type=int, default=1400)
     create.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
-    create.add_argument("--pack", dest="algorithm_pack", choices=["careful", "balanced", "throughput", "maximum"], default="balanced")
+    create.add_argument("--pack", dest="algorithm_pack", default="balanced")
     create.add_argument("--cpu", type=int)
     create.add_argument("--ram", type=int)
     create.add_argument("--gpu", type=int)
@@ -394,10 +411,40 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .format_intelligence import advise_path
 
         return True, advise_path(args.path)
+    if args.command == "packs":
+        from .packs import (
+            PACK_ALGORITHMS,
+            add_pack_algorithm,
+            algorithm_pack_path,
+            algorithm_pack_table,
+            create_algorithm_pack,
+            delete_algorithm_pack,
+            get_algorithm_pack,
+            remove_pack_algorithm,
+        )
+
+        if args.pack_command == "list":
+            return True, {"path": str(algorithm_pack_path()), "packs": algorithm_pack_table()}
+        if args.pack_command == "path":
+            return True, {"path": str(algorithm_pack_path())}
+        if args.pack_command == "algorithms":
+            return True, {"algorithms": [{"name": name, **info} for name, info in PACK_ALGORITHMS.items()]}
+        if args.pack_command == "show":
+            return True, get_algorithm_pack(args.name)
+        if args.pack_command == "clone":
+            return True, create_algorithm_pack(args.name, base=args.base, label=args.label)
+        if args.pack_command == "add-algorithm":
+            return True, add_pack_algorithm(args.name, args.algorithm)
+        if args.pack_command == "remove-algorithm":
+            return True, remove_pack_algorithm(args.name, args.algorithm)
+        path = delete_algorithm_pack(args.name)
+        return True, {"deleted": args.name, "path": str(path)}
     if args.command == "execution":
-        from .hardware import ALGORITHM_PACKS, detect_hardware
+        from .hardware import detect_hardware
+        from .packs import list_algorithm_packs
 
         hardware = detect_hardware()
+        packs = list_algorithm_packs()
         return True, {
             "default_execution": "hybrid" if hardware["gpu_available"] else "cpu",
             "execution_targets": {
@@ -408,6 +455,9 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             "accelerators": [*hardware["nvidia_gpus"], *hardware["accelerators"]],
             "algorithm_packs": {
                 name: {
+                    "base": item["base"],
+                    "built_in": item["built_in"],
+                    "algorithms": list(item["algorithms"]),
                     "data_workers": item["data_workers"],
                     "prefetch": item["prefetch"],
                     "stream_limit_mb": None if item["stream_limit"] >= 2**60 else item["stream_limit"] // 1024**2,
@@ -416,7 +466,7 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
                     "arena_mb": item["arena_bytes"] // 1024**2,
                     "chunk_target_records": item["chunk_target_records"],
                 }
-                for name, item in ALGORITHM_PACKS.items()
+                for name, item in packs.items()
             },
         }
     if args.command == "tune":
@@ -692,7 +742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RemoteError as error:
         _emit_error(error, args.json)
         return EXIT_AUTHORIZATION if error.status in {401, 403} else EXIT_EXPECTED_ERROR
-    except (KernelyraError, OSError, ValueError) as error:
+    except (KernelyraError, KeyError, OSError, ValueError) as error:
         _emit_error(error, args.json)
         return EXIT_EXPECTED_ERROR
 

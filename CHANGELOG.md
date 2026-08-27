@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0a3 — 2026-08-27
+
+- Added immutable built-in algorithm packs plus validated user packs that can
+  be cloned and edited through Python, CLI or PowerShell. Pack algorithms
+  materially control native threads, bulk dispatch, bounded prefetch, context
+  chunk targets and reusable arena ceilings; correctness guards stay mandatory.
+- Added a repeated full-batch native ABI, reused thread-local gradient
+  workspaces, runtime AVX2/FMA dispatch and workload-gated OpenMP execution.
+- Expanded the active Fortran training guard/workspace kernels and Zig bounded
+  arena/batch planning used by the native CSV streaming path.
+- Added one maintained CPU benchmark runner and raw local evidence with exact
+  hardware/runtime metadata. The README reports only that measured case and
+  does not generalize it to other hardware, datasets or frameworks.
+
 ## 0.5.0a2 — 2026-08-26
 
 - Replaced public PC-strength modes with explicit `cpu`/`hybrid` execution,

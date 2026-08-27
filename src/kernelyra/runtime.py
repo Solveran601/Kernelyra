@@ -14,9 +14,9 @@ from typing import Any
 from .backends import WORKER_PROTOCOL_VERSION, BackendConfig, BackendWorker, ProcessBackendWorker
 from .checkpoints import CheckpointManager
 from .errors import ConfigurationError, RunError, RunStateError
-from .hardware import ALGORITHM_PACKS
 from .model_guard import assess_trend
 from .models import RunInfo
+from .packs import list_algorithm_packs
 from .quality import QualityGate
 from .storage import SQLiteStorage
 from .trace import TrainingTrace
@@ -819,7 +819,7 @@ class TrainingRuntime:
             "datasets": [item.to_dict() for item in datasets],
             "hardware": self.workspace.hardware,
             "execution_targets": ["cpu", "hybrid"],
-            "algorithm_packs": {key: dict(value) for key, value in ALGORITHM_PACKS.items()},
+            "algorithm_packs": list_algorithm_packs(),
             "model_formats": self.workspace.capabilities["model_formats"],
             "format_router_minimum": self.workspace.datasets.router.route_count,
             "capabilities": self.workspace.capabilities,

@@ -3,14 +3,13 @@ include setup.py
 include worker.py start_worker.bat start_worker.ps1 requirements.txt
 recursive-include examples *.py
 recursive-include scripts *.py
-include scripts/install_benchmark_stack.ps1
 include scripts/install_powershell_module.ps1
 recursive-include powershell *.psm1 *.psd1
-recursive-include reports *.json *.md
 recursive-include assets/brand *.png *.svg
+recursive-include benchmarks/cpu *.md *.py *.json
 recursive-include constraints *.txt
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90
-recursive-include sdks *.h *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.php *.rs *.toml *.lock *.md *.kt *.swift *.rb *.txt
+recursive-include sdks *.h *.c *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.rs *.toml *.lock *.md *.swift *.rb *.txt
 prune .kernelyra
 prune native/build
 global-exclude __pycache__ *.py[cod] *.sqlite3 *.sqlite3-wal *.sqlite3-shm *.log *.exe *.pdb

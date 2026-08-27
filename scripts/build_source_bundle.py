@@ -35,11 +35,11 @@ ROOT_FILES = (
 SOURCE_DIRS = (
     ".github",
     "assets",
+    "benchmarks",
     "constraints",
     "examples",
     "native",
     "powershell",
-    "reports",
     "scripts",
     "sdks",
     "src",
@@ -92,7 +92,7 @@ def source_files() -> list[Path]:
 
 
 def validate_tree() -> None:
-    local = {".kernelyra", ".trainflow", ".test_workspaces", ".benchmarks"}
+    local = {".kernelyra", ".trainflow", ".test_workspaces"}
     forbidden = find_forbidden(ROOT, ignore_top_level=local)
     if forbidden:
         raise SystemExit("Forbidden source artifacts:\n" + "\n".join(forbidden))

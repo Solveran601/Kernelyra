@@ -82,11 +82,11 @@ def _split_policy(columns: list[str], task: str | None, *, target: str | None, r
     if context:
         return {
             "strategy": "context",
-            "execution_strategy": "random",
+            "execution_strategy": "context",
             "order_column": None,
             "context_column": context,
-            "reason": "A group-like column was found; a group-exclusive splitter should be supplied before production use.",
-            "enforcement": "advisory only in this alpha; the built-in trainer falls back to a deterministic random split",
+            "reason": "A group-like column was found; keep every matching context in exactly one split.",
+            "enforcement": "external streaming tabular path; AutoTrainer routes detected context data through the built-in group-exclusive splitter",
         }
     if task in {"binary_classification", "multiclass_classification"}:
         return {

@@ -208,6 +208,9 @@ def main() -> int:
             raise SystemExit(f"Forbidden files in {artifact.name}:\n" + "\n".join(forbidden))
     sdist_names = archive_names(sdists[0])
     distributable_sources = (
+        "benchmarks/cpu/README.md",
+        "benchmarks/cpu/benchmark_dense_binary.py",
+        "benchmarks/cpu/results/modern-14-c12m-v0.5.0a3.json",
         "native/core/zig/memory_kernels.zig",
         "native/core/fortran/training_kernels.f90",
         "native/include/kernelyra_core.h",
@@ -277,7 +280,7 @@ payload = {
     'new_files': sorted(set(os.listdir('.')) - before_files),
 }
 print(json.dumps(payload, sort_keys=True))
-assert payload['version'] == '0.5.0a2'
+assert payload['version'] == '0.5.0a3'
 assert payload['tensorflow_loaded'] is False
 assert payload['new_threads'] == []
 assert payload['new_files'] == []
@@ -302,10 +305,10 @@ assert payload['new_files'] == []
                 env=smoke_env,
             )
 
-        if cli("version").stdout.strip() != "0.5.0a2":
+        if cli("version").stdout.strip() != "0.5.0a3":
             raise SystemExit("Installed-wheel CLI reported an unexpected version")
         doctor = json.loads(cli("--json", "doctor").stdout)
-        if not doctor.get("ok") or doctor.get("version") != "0.5.0a2":
+        if not doctor.get("ok") or doctor.get("version") != "0.5.0a3":
             raise SystemExit(f"Installed-wheel doctor failed: {doctor}")
         capabilities = json.loads(cli("--json", "capabilities").stdout)
         if not any(item.get("name") == "numpy" and item.get("available") for item in capabilities["backends"]):
@@ -346,7 +349,7 @@ assert payload['new_files'] == []
         if set(public_health) != {"ok", "version", "protocol"}:
             raise SystemExit(f"Public health leaked private fields: {public_health}")
         health = json.loads(cli("daemon", "status").stdout)
-        if health.get("version") != "0.5.0a2" or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
+        if health.get("version") != "0.5.0a3" or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
             raise SystemExit(f"Unexpected installed-wheel daemon health: {health}")
 
         _expect_get_status(url, "/", 404)

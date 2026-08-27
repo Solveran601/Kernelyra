@@ -89,7 +89,7 @@ def main() -> int:
         help="ignore the local egg-info directory created by an editable install",
     )
     args = parser.parse_args()
-    local = {".kernelyra", ".trainflow", ".test_workspaces", ".benchmarks"}
+    local = {".kernelyra", ".trainflow", ".test_workspaces"}
     forbidden = find_forbidden(
         ROOT,
         ignore_top_level=local,

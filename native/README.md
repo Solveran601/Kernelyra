@@ -6,9 +6,9 @@ training loop translated into several languages.
 ```text
 native/
 ├── core/
-│   ├── fortran/     dense training arithmetic: dot, AXPY, gradients, updates
-│   ├── rust/        deterministic context split and bounded chunk policies
-│   └── zig/         aligned buffers, copy, zero and normalization
+│   ├── fortran/     moments, activations, losses, optimizers and all tabular training kernels
+│   ├── rust/        splits, adaptive policies and UTF-8 text-span planning
+│   └── zig/         alignment, allocation, batches, transforms, reductions and guards
 ├── bridge/cpp/      compact C ABI, bounded CSV streaming and safe fallback
 ├── bindings/c/      C cursor library for bounded context-safe chunks
 ├── include/         stable C/C++/Rust-facing ABI header
@@ -16,16 +16,30 @@ native/
 └── CMakeLists.txt   reproducible native build
 ```
 
-Rust, Fortran and Zig are the active low-level engine components. Rust owns
-deterministic context-safe train/validation/test assignment and bounded,
-variable-size chunk policies; C++ invokes it through the stable C ABI and keeps
-a conservative fallback. For binary
-classification and regression, Fortran executes the entire native train step;
-C++ exposes the ABI, streams batches without loading a whole dataset and keeps
-a conservative fallback for diagnostic comparison. Native multiclass is still
-a partial C++ implementation until its equivalent Fortran kernel is complete.
-Rust, C and C++ consume the ABI directly; Python is only the high-level
-orchestration and optional-framework layer.
+Rust, Fortran and Zig are the active low-level engine components. Fortran owns
+the active binary, multiclass and regression update paths, together with stable
+moments, softmax, cross-entropy, dense scores, gradients and opt-in L2 gradient
+clipping. Its files are divided by numerical responsibility so a loss,
+activation or optimizer can be tested and replaced without duplicating rules.
+Zig owns aligned allocation, row gathering for random batches, transfer,
+non-finite repair, finite-value guards, normalization and bounded reductions.
+Rust owns deterministic context-safe train/validation/test
+assignment, bounded variable-size chunk policies and UTF-8 text-span planning.
+Its adaptive extension accepts explicit memory pressure and algorithm
+aggression, not guessed PC classes.
+C exposes a validated execution-plan contract for CPU/RAM/GPU/thread budgets.
+C++ is the deliberately small ABI, CSV-streaming and model-lifetime bridge; it
+does not own the normal numerical update path. It retains scalar/AVX fallbacks
+only for diagnostics and builds without the Fortran component. Rust, C and C++
+consume the ABI directly; Python is only the high-level orchestration and
+optional-framework layer.
+
+The text-span planner is an experimental **preprocessing** primitive. It makes
+UTF-8-safe spans whose content covers the original source contiguously and
+whose later spans include a bounded prefix of earlier text. Kernelyra v5 does
+not yet include a language-model trainer, tokenizer integration, loss masking,
+or group-exclusive evaluation for text; the prefix must not be treated as a
+claim that LLM fine-tuning is already available.
 
 End users install a Windows wheel containing `kernelyra_core.dll` and do not
 need a compiler. Source contributors need MinGW g++, gfortran, Zig and Rust:

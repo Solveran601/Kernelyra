@@ -45,6 +45,40 @@ class _ModelConfig(ctypes.Structure):
     ]
 
 
+class _TextChunk(ctypes.Structure):
+    _fields_ = [
+        ("context_start", ctypes.c_size_t),
+        ("content_start", ctypes.c_size_t),
+        ("end", ctypes.c_size_t),
+    ]
+
+
+class _ArenaStats(ctypes.Structure):
+    _fields_ = [
+        ("capacity_bytes", ctypes.c_size_t),
+        ("used_bytes", ctypes.c_size_t),
+        ("high_water_bytes", ctypes.c_size_t),
+        ("alignment", ctypes.c_size_t),
+        ("allocations", ctypes.c_uint64),
+        ("failed_allocations", ctypes.c_uint64),
+        ("resets", ctypes.c_uint64),
+    ]
+
+
+class _BatchPlan(ctypes.Structure):
+    _fields_ = [
+        ("capacity_bytes", ctypes.c_size_t),
+        ("requested_rows", ctypes.c_size_t),
+        ("planned_rows", ctypes.c_size_t),
+        ("maximum_rows", ctypes.c_size_t),
+        ("features", ctypes.c_size_t),
+        ("buffer_count", ctypes.c_size_t),
+        ("bytes_per_row", ctypes.c_size_t),
+        ("required_bytes", ctypes.c_size_t),
+        ("fits", ctypes.c_uint32),
+    ]
+
+
 def _library_names() -> tuple[str, ...]:
     system = platform.system().lower()
     if system == "windows":
@@ -126,18 +160,42 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             )
         component_sources = {
             "zig": root / "native" / "core" / "zig" / "memory_kernels.zig",
-            "fortran": root / "native" / "core" / "fortran" / "training_kernels.f90",
         }
+        fortran_sources = [
+            root / "native" / "core" / "fortran" / name
+            for name in (
+                "numeric_constants.f90",
+                "numeric_precision.f90",
+                "numeric_moments.f90",
+                "activation_softmax.f90",
+                "loss_binary.f90",
+                "loss_multiclass.f90",
+                "loss_regression.f90",
+                "gradient_layout.f90",
+                "workspace_kernels.f90",
+                "vector_kernels.f90",
+                "gradient_kernels.f90",
+                "optimizer_clip.f90",
+                "training_guard.f90",
+                "training_state.f90",
+                "matrix_scores.f90",
+                "multiclass_training.f90",
+                "training_kernels.f90",
+            )
+        ]
         rust_manifest = root / "native" / "core" / "rust" / "Cargo.toml"
         with tempfile.TemporaryDirectory(prefix="kernelyra-native-build-") as temporary:
             build = Path(temporary)
             objects: list[Path] = []
             defines: list[str] = []
 
-            def compile_component(arguments: list[str], expected: Path, name: str) -> None:
+            def compile_component(
+                arguments: list[str], expected: Path, name: str, environment: dict[str, str] | None = None
+            ) -> None:
                 result = subprocess.run(  # nosec B603
                     arguments,
                     cwd=root,
+                    env=environment,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -152,6 +210,9 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
 
             if component_sources["zig"].is_file():
                 zig_object = build / "memory_zig.obj"
+                zig_environment = os.environ.copy()
+                zig_environment["ZIG_GLOBAL_CACHE_DIR"] = str(build / "zig-global-cache")
+                zig_environment["ZIG_LOCAL_CACHE_DIR"] = str(build / "zig-local-cache")
                 compile_component(
                     [
                         zig,
@@ -165,26 +226,32 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                     ],
                     zig_object,
                     "Zig memory",
+                    zig_environment,
                 )
                 defines.append("-DKR_HAS_ZIG_MEMORY=1")
-            if component_sources["fortran"].is_file():
-                fortran_object = build / "numeric_fortran.o"
-                compile_component(
-                    [
-                        gfortran,
-                        "-O3",
-                        "-ffast-math",
-                        "-funroll-loops",
-                        "-fno-protect-parens",
-                        "-fopenmp",
-                        "-c",
-                        str(component_sources["fortran"]),
-                        "-o",
-                        str(fortran_object),
-                    ],
-                    fortran_object,
-                    "Fortran numeric",
-                )
+            if all(source.is_file() for source in fortran_sources):
+                for index, fortran_source in enumerate(fortran_sources):
+                    fortran_object = build / f"numeric_fortran_{index}.o"
+                    compile_component(
+                        [
+                            gfortran,
+                            "-O3",
+                            "-ffast-math",
+                            "-funroll-loops",
+                            "-fno-protect-parens",
+                            "-fopenmp",
+                            "-J",
+                            str(build),
+                            "-I",
+                            str(build),
+                            "-c",
+                            str(fortran_source),
+                            "-o",
+                            str(fortran_object),
+                        ],
+                        fortran_object,
+                        f"Fortran numeric ({fortran_source.stem})",
+                    )
                 defines.append("-DKR_HAS_FORTRAN_NUMERIC=1")
             if rust_manifest.is_file():
                 rust_target = "x86_64-pc-windows-gnu"
@@ -319,6 +386,41 @@ class NativeCore:
         library.kr_memory_alloc_aligned.argtypes = [ctypes.c_size_t, ctypes.c_size_t]
         library.kr_memory_alloc_aligned.restype = ctypes.c_void_p
         library.kr_memory_free_aligned.argtypes = [ctypes.c_void_p]
+        self._monotonic_arena_available = all(
+            hasattr(library, name)
+            for name in (
+                "kr_memory_arena_create",
+                "kr_memory_arena_destroy",
+                "kr_memory_arena_acquire",
+                "kr_memory_arena_mark",
+                "kr_memory_arena_rewind",
+                "kr_memory_arena_reset",
+                "kr_memory_arena_get_stats",
+            )
+        )
+        self._batch_planner_available = hasattr(library, "kr_memory_batch_plan_make")
+        if self._monotonic_arena_available:
+            library.kr_memory_arena_create.argtypes = [ctypes.c_size_t, ctypes.c_size_t]
+            library.kr_memory_arena_create.restype = ctypes.c_void_p
+            library.kr_memory_arena_destroy.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_acquire.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+            library.kr_memory_arena_acquire.restype = ctypes.c_void_p
+            library.kr_memory_arena_mark.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_mark.restype = ctypes.c_size_t
+            library.kr_memory_arena_rewind.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            library.kr_memory_arena_rewind.restype = ctypes.c_int
+            library.kr_memory_arena_reset.argtypes = [ctypes.c_void_p]
+            library.kr_memory_arena_get_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ArenaStats)]
+            library.kr_memory_arena_get_stats.restype = ctypes.c_int
+        if self._batch_planner_available:
+            library.kr_memory_batch_plan_make.argtypes = [
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(_BatchPlan),
+            ]
+            library.kr_memory_batch_plan_make.restype = ctypes.c_int
         library.kr_memory_normalize_f32.argtypes = [
             ctypes.POINTER(ctypes.c_float),
             ctypes.c_size_t,
@@ -337,6 +439,47 @@ class NativeCore:
         library.kr_values_l2_norm_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
         library.kr_values_l2_norm_f32.restype = ctypes.c_float
         library.kr_values_clip_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+        self._extended_zig_memory_available = all(
+            hasattr(library, name)
+            for name in (
+                "kr_memory_fill_f32",
+                "kr_memory_scale_f32",
+                "kr_memory_add_f32",
+                "kr_memory_repair_nonfinite_f32",
+                "kr_values_sum_f32",
+                "kr_values_max_abs_f32",
+            )
+        )
+        if self._extended_zig_memory_available:
+            library.kr_memory_fill_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+            library.kr_memory_scale_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float]
+            library.kr_memory_add_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_size_t
+            ]
+            library.kr_memory_repair_nonfinite_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_float)
+            ]
+            library.kr_memory_repair_nonfinite_f32.restype = ctypes.c_uint64
+            library.kr_values_sum_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_sum_f32.restype = ctypes.c_float
+            library.kr_values_max_abs_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_max_abs_f32.restype = ctypes.c_float
+        self._extended_fortran_numeric_available = all(
+            hasattr(library, name)
+            for name in ("kr_values_clip_l2_f32", "kr_values_moments_f32", "kr_values_softmax_f32")
+        )
+        if self._extended_fortran_numeric_available:
+            library.kr_values_clip_l2_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_float
+            ]
+            library.kr_values_clip_l2_f32.restype = ctypes.c_float
+            library.kr_values_moments_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float),
+            ]
+            library.kr_values_moments_f32.restype = ctypes.c_int
+            library.kr_values_softmax_f32.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+            library.kr_values_softmax_f32.restype = ctypes.c_int
         library.kr_rust_mix_u64.argtypes = [ctypes.c_uint64]
         library.kr_rust_mix_u64.restype = ctypes.c_uint64
         library.kr_rust_split_for_key.argtypes = [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32]
@@ -350,6 +493,45 @@ class NativeCore:
             ctypes.c_uint64,
         ]
         library.kr_rust_next_chunk_size.restype = ctypes.c_size_t
+        self._adaptive_chunk_available = hasattr(library, "kr_rust_next_adaptive_chunk_size")
+        if self._adaptive_chunk_available:
+            library.kr_rust_next_adaptive_chunk_size.argtypes = [
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            library.kr_rust_next_adaptive_chunk_size.restype = ctypes.c_size_t
+        self._text_chunk_available = hasattr(library, "kr_text_plan_chunks")
+        if self._text_chunk_available:
+            library.kr_text_plan_chunks.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(_TextChunk),
+                ctypes.c_size_t,
+            ]
+            library.kr_text_plan_chunks.restype = ctypes.c_size_t
+        self._fused_preprocess_available = hasattr(library, "kr_preprocess_f32")
+        if self._fused_preprocess_available:
+            library.kr_preprocess_f32.argtypes = [
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_float,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint64),
+            ]
+            library.kr_preprocess_f32.restype = ctypes.c_int
         self._format_probe_available = hasattr(library, "kr_format_probe_signature")
         if self._format_probe_available:
             library.kr_format_probe_signature.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
@@ -397,6 +579,17 @@ class NativeCore:
             ctypes.POINTER(ctypes.c_float),
         ]
         library.kr_model_train_random_steps.restype = ctypes.c_int
+        self._model_train_steps_available = hasattr(library, "kr_model_train_steps")
+        if self._model_train_steps_available:
+            library.kr_model_train_steps.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_float),
+            ]
+            library.kr_model_train_steps.restype = ctypes.c_int
         library.kr_model_predict.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -533,6 +726,117 @@ class NativeCore:
             )
         )
 
+    def next_adaptive_chunk_size(
+        self,
+        remaining_records: int,
+        target_records: int,
+        minimum_records: int,
+        maximum_records: int,
+        sequence: int,
+        seed: int,
+        *,
+        memory_pressure_percent: int,
+        aggression_percent: int,
+    ) -> int:
+        """Return a Rust-native resource-aware chunk size from explicit signals.
+
+        This is optional to keep already released DLLs loadable; callers that
+        need the adaptive policy must build or install a core containing it.
+        """
+        if not self._adaptive_chunk_available:
+            raise NativeCoreError("This native core does not include adaptive chunk scheduling")
+        return int(
+            self.library.kr_rust_next_adaptive_chunk_size(
+                remaining_records,
+                target_records,
+                minimum_records,
+                maximum_records,
+                sequence,
+                seed,
+                memory_pressure_percent,
+                aggression_percent,
+            )
+        )
+
+    def plan_text_chunks(
+        self,
+        text: str,
+        *,
+        minimum_bytes: int = 768,
+        target_bytes: int = 1_536,
+        maximum_bytes: int = 2_048,
+        overlap_bytes: int = 256,
+    ) -> list[dict[str, Any]]:
+        """Plan UTF-8-safe text spans with explicit reusable context prefixes.
+
+        Each returned item has a ``content`` range that partitions the input
+        exactly once, plus a ``context`` prefix. A future language-model
+        trainer must mask this prefix from loss; v5 does not yet ship one.
+        """
+        if not self._text_chunk_available:
+            raise NativeCoreError("This native core does not include text chunk planning")
+        if not isinstance(text, str):
+            raise NativeCoreError("text chunk planning requires a string")
+        payload = text.encode("utf-8")
+        buffer = ctypes.create_string_buffer(payload) if payload else None
+        pointer = ctypes.cast(buffer, ctypes.c_void_p) if buffer is not None else None
+        required = int(
+            self.library.kr_text_plan_chunks(
+                pointer,
+                len(payload),
+                minimum_bytes,
+                target_bytes,
+                maximum_bytes,
+                overlap_bytes,
+                None,
+                0,
+            )
+        )
+        if required == ctypes.c_size_t(-1).value:
+            raise self.error()
+        if required == 0:
+            return []
+        spans = (_TextChunk * required)()
+        written = int(
+            self.library.kr_text_plan_chunks(
+                pointer,
+                len(payload),
+                minimum_bytes,
+                target_bytes,
+                maximum_bytes,
+                overlap_bytes,
+                spans,
+                required,
+            )
+        )
+        if written != required:
+            raise NativeCoreError("Native text chunk planner returned an inconsistent span count")
+        result: list[dict[str, Any]] = []
+        expected_start = 0
+        for span in spans:
+            context_start, content_start, end = int(span.context_start), int(span.content_start), int(span.end)
+            if not (0 <= context_start <= content_start == expected_start < end <= len(payload)):
+                raise NativeCoreError("Native text chunk planner returned invalid boundaries")
+            try:
+                context = payload[context_start:end].decode("utf-8")
+                content = payload[content_start:end].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise NativeCoreError("Native text chunk planner split a UTF-8 sequence") from error
+            result.append(
+                {
+                    "context_start_byte": context_start,
+                    "content_start_byte": content_start,
+                    "end_byte": end,
+                    "context_prefix_bytes": content_start - context_start,
+                    "context": context,
+                    "content": content,
+                }
+            )
+            expected_start = end
+        if expected_start != len(payload):
+            raise NativeCoreError("Native text chunk planner did not cover the complete input")
+        return result
+
     def probe_signature(self, prefix: bytes) -> int | None:
         """Classify at most a 4 KiB untrusted prefix through the Rust policy core.
 
@@ -565,6 +869,86 @@ class NativeCore:
         )
         return array
 
+    def moments(self, values: np.ndarray) -> tuple[float, float]:
+        """Return stable population moments through the Fortran numeric core."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        mean = ctypes.c_float()
+        standard_deviation = ctypes.c_float()
+        ok = self.library.kr_values_moments_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size,
+            ctypes.byref(mean), ctypes.byref(standard_deviation),
+        )
+        if not ok:
+            raise self.error()
+        return float(mean.value), float(standard_deviation.value)
+
+    def softmax(self, values: np.ndarray) -> np.ndarray:
+        """Return a normalized float32 score vector through Fortran softmax."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1).copy()
+        if array.size == 0:
+            raise NativeCoreError("softmax requires at least one value")
+        if not self.library.kr_values_softmax_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size
+        ):
+            raise self.error()
+        return array
+
+    def clip_l2(self, values: np.ndarray, maximum_norm: float) -> tuple[np.ndarray, float]:
+        """Return a Fortran-clipped copy and the L2 norm observed before clipping."""
+        if not self._extended_fortran_numeric_available:
+            raise NativeCoreError("This native core does not include extended Fortran numeric kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1).copy()
+        observed = float(self.library.kr_values_clip_l2_f32(
+            array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), array.size, ctypes.c_float(maximum_norm)
+        ))
+        if not math.isfinite(observed):
+            raise self.error()
+        return array, observed
+
+    def preprocess_f32(
+        self,
+        values: np.ndarray,
+        means: np.ndarray,
+        stds: np.ndarray,
+        *,
+        clip_limit: float = 8.0,
+    ) -> tuple[np.ndarray, int]:
+        """Repair non-finite entries, normalize and clip through the C++ core.
+
+        The input is never mutated.  The returned count is the number of
+        source values repaired before normalization, which lets Model Guard
+        record data-quality evidence without another Python scan.
+        """
+        if not self._fused_preprocess_available:
+            raise NativeCoreError("This native core does not include fused preprocessing")
+        matrix = np.ascontiguousarray(values, dtype=np.float32)
+        if matrix.ndim != 2:
+            raise NativeCoreError("preprocess values must be a two-dimensional array")
+        output = matrix.copy()
+        mean_array = np.ascontiguousarray(means, dtype=np.float32).reshape(-1)
+        std_array = np.ascontiguousarray(stds, dtype=np.float32).reshape(-1)
+        if mean_array.size != output.shape[1] or std_array.size != output.shape[1]:
+            raise NativeCoreError("preprocess statistics must match the feature count")
+        repaired = ctypes.c_uint64(0)
+        flags = 1 | 2 | 4
+        ok = self.library.kr_preprocess_f32(
+            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            output.shape[0],
+            output.shape[1],
+            mean_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            std_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            ctypes.c_float(clip_limit),
+            flags,
+            ctypes.byref(repaired),
+        )
+        if not ok:
+            raise self.error()
+        return output, int(repaired.value)
+
     @property
     def component_mask(self) -> int:
         return int(self.library.kr_core_component_mask())
@@ -594,12 +978,159 @@ class NativeCore:
             destination.size,
         )
 
+    def fill_f32(self, values: np.ndarray, value: float) -> None:
+        """Fill a float32 array through Zig's explicit buffer kernel."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        values = self._native_float_array(values, name="values")
+        self.library.kr_memory_fill_f32(
+            values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size, ctypes.c_float(value)
+        )
+
+    def scale_f32(self, values: np.ndarray, scale: float) -> None:
+        """Scale a float32 array in place through Zig."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        values = self._native_float_array(values, name="values")
+        self.library.kr_memory_scale_f32(
+            values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size, ctypes.c_float(scale)
+        )
+
+    def add_f32(self, destination: np.ndarray, source: np.ndarray) -> None:
+        """Add equal-sized float32 arrays in place through Zig."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        destination = self._native_float_array(destination, name="destination")
+        source = self._native_float_array(source, name="source")
+        if destination.size != source.size:
+            raise NativeCoreError("Native memory add requires equal-sized arrays")
+        self.library.kr_memory_add_f32(
+            destination.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            source.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), destination.size,
+        )
+
+    def memory_summary(self, values: np.ndarray) -> tuple[float, float]:
+        """Return Zig-computed sum and maximum absolute value for a finite array."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        array = np.ascontiguousarray(values, dtype=np.float32).reshape(-1)
+        pointer = array.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        return float(self.library.kr_values_sum_f32(pointer, array.size)), float(
+            self.library.kr_values_max_abs_f32(pointer, array.size)
+        )
+
+    def repair_nonfinite_f32(self, values: np.ndarray, means: np.ndarray) -> tuple[np.ndarray, int]:
+        """Repair a matrix through Zig before a caller chooses normalization."""
+        if not self._extended_zig_memory_available:
+            raise NativeCoreError("This native core does not include extended Zig memory kernels")
+        matrix = np.ascontiguousarray(values, dtype=np.float32)
+        if matrix.ndim != 2:
+            raise NativeCoreError("repair values must be a two-dimensional array")
+        output = matrix.copy()
+        mean_array = np.ascontiguousarray(means, dtype=np.float32).reshape(-1)
+        if mean_array.size != output.shape[1]:
+            raise NativeCoreError("repair means must match the feature count")
+        repaired = self.library.kr_memory_repair_nonfinite_f32(
+            output.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), output.shape[0], output.shape[1],
+            mean_array.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+        )
+        return output, int(repaired)
+
     def zero_f32(self, values: np.ndarray) -> None:
         """Zero a float32 array through the selected memory kernel."""
         values = self._native_float_array(values, name="values")
         self.library.kr_memory_zero_f32(
             values.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), values.size
         )
+
+    @property
+    def monotonic_arena_available(self) -> bool:
+        """Whether this DLL contains the bounded Zig monotonic-arena ABI."""
+        return self._monotonic_arena_available
+
+    @property
+    def batch_planner_available(self) -> bool:
+        """Whether the DLL can prove a float32 batch fits a bounded arena."""
+        return self._batch_planner_available
+
+    def plan_memory_batch(
+        self, capacity_bytes: int, requested_rows: int, features: int, *, buffer_count: int = 2
+    ) -> dict[str, int | bool]:
+        if not self._batch_planner_available:
+            raise NativeCoreError("This native core does not include the Zig batch memory planner")
+        output = _BatchPlan()
+        if not self.library.kr_memory_batch_plan_make(
+            int(capacity_bytes), int(requested_rows), int(features), int(buffer_count), ctypes.byref(output)
+        ):
+            raise self.error()
+        return {
+            "capacity_bytes": int(output.capacity_bytes),
+            "requested_rows": int(output.requested_rows),
+            "planned_rows": int(output.planned_rows),
+            "maximum_rows": int(output.maximum_rows),
+            "features": int(output.features),
+            "buffer_count": int(output.buffer_count),
+            "bytes_per_row": int(output.bytes_per_row),
+            "required_bytes": int(output.required_bytes),
+            "fits": bool(output.fits),
+        }
+
+    def create_memory_arena(self, capacity_bytes: int, alignment: int = 64) -> int:
+        if not self._monotonic_arena_available:
+            raise NativeCoreError("This native core does not include the Zig monotonic arena")
+        capacity, requested_alignment = int(capacity_bytes), int(alignment)
+        if capacity < 1 or requested_alignment < ctypes.sizeof(ctypes.c_void_p) or requested_alignment & (requested_alignment - 1):
+            raise NativeCoreError("Arena capacity must be positive and alignment must be a power of two")
+        handle = int(self.library.kr_memory_arena_create(capacity, requested_alignment) or 0)
+        if not handle:
+            raise self.error()
+        return handle
+
+    def destroy_memory_arena(self, handle: int) -> None:
+        if self._monotonic_arena_available and handle:
+            self.library.kr_memory_arena_destroy(ctypes.c_void_p(handle))
+
+    def memory_arena_acquire(self, handle: int, bytes_count: int, alignment: int = 64) -> int:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        pointer = int(
+            self.library.kr_memory_arena_acquire(ctypes.c_void_p(handle), int(bytes_count), int(alignment)) or 0
+        )
+        if not pointer:
+            raise self.error()
+        return pointer
+
+    def memory_arena_mark(self, handle: int) -> int:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        return int(self.library.kr_memory_arena_mark(ctypes.c_void_p(handle)))
+
+    def memory_arena_rewind(self, handle: int, mark: int) -> None:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        if not self.library.kr_memory_arena_rewind(ctypes.c_void_p(handle), int(mark)):
+            raise self.error()
+
+    def reset_memory_arena(self, handle: int) -> None:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        self.library.kr_memory_arena_reset(ctypes.c_void_p(handle))
+
+    def memory_arena_stats(self, handle: int) -> dict[str, int]:
+        if not self._monotonic_arena_available or not handle:
+            raise NativeCoreError("Native monotonic arena is unavailable")
+        stats = _ArenaStats()
+        if not self.library.kr_memory_arena_get_stats(ctypes.c_void_p(handle), ctypes.byref(stats)):
+            raise self.error()
+        return {
+            "capacity_bytes": int(stats.capacity_bytes),
+            "used_bytes": int(stats.used_bytes),
+            "high_water_bytes": int(stats.high_water_bytes),
+            "alignment": int(stats.alignment),
+            "allocations": int(stats.allocations),
+            "failed_allocations": int(stats.failed_allocations),
+            "resets": int(stats.resets),
+        }
 
     def error(self) -> NativeCoreError:
         value = self.library.kr_last_error()
@@ -625,6 +1156,11 @@ class NativeTensorArena:
         self.alignment = int(alignment)
         self._buffers: dict[tuple[str, tuple[int, ...]], tuple[int, Any, np.ndarray]] = {}
         self._allocated_bytes = 0
+        self._arena_handle = (
+            self.core.create_memory_arena(self.byte_budget, self.alignment)
+            if self.byte_budget is not None and self.core.monotonic_arena_available
+            else None
+        )
         self._closed = False
 
     def acquire_float32(self, shape: tuple[int, ...], *, tag: str = "default") -> np.ndarray:
@@ -639,12 +1175,16 @@ class NativeTensorArena:
             return previous[2]
         elements = math.prod(normalized_shape)
         byte_count = elements * ctypes.sizeof(ctypes.c_float)
-        if self.byte_budget is not None and self._allocated_bytes + byte_count > self.byte_budget:
+        if self.byte_budget is not None and self._arena_handle is None and self._allocated_bytes + byte_count > self.byte_budget:
             raise NativeCoreError(
                 f"Native tensor arena budget exceeded: need {byte_count} bytes, "
                 f"allocated {self._allocated_bytes}, budget {self.byte_budget}"
             )
-        address = int(self.core.library.kr_memory_alloc_aligned(byte_count, self.alignment) or 0)
+        address = (
+            self.core.memory_arena_acquire(self._arena_handle, byte_count, self.alignment)
+            if self._arena_handle is not None
+            else int(self.core.library.kr_memory_alloc_aligned(byte_count, self.alignment) or 0)
+        )
         if not address:
             raise self.core.error()
         raw = (ctypes.c_float * elements).from_address(address)
@@ -653,8 +1193,22 @@ class NativeTensorArena:
         self._allocated_bytes += byte_count
         return array
 
+    def has_float32(self, shape: tuple[int, ...], *, tag: str = "default") -> bool:
+        """Return whether the tagged shape already has a reusable lease."""
+        normalized_shape = tuple(int(value) for value in shape)
+        return (str(tag), normalized_shape) in self._buffers
+
     @property
     def stats(self) -> dict[str, int]:
+        if self._arena_handle is not None:
+            native = self.core.memory_arena_stats(self._arena_handle)
+            return {
+                **native,
+                "allocated_bytes": native["used_bytes"],
+                "reserved_bytes": native["capacity_bytes"],
+                "buffers": len(self._buffers),
+                "byte_budget": self.byte_budget or 0,
+            }
         return {
             "alignment": self.alignment,
             "allocated_bytes": self._allocated_bytes,
@@ -662,11 +1216,41 @@ class NativeTensorArena:
             "byte_budget": self.byte_budget or 0,
         }
 
+    def mark(self) -> int:
+        """Return a native lease mark; later rewind/reset invalidates released views."""
+        if self._arena_handle is None:
+            return self._allocated_bytes
+        return self.core.memory_arena_mark(self._arena_handle)
+
+    def rewind(self, mark: int) -> None:
+        """Release all arena leases after ``mark`` and invalidate cached views."""
+        if self._closed:
+            raise NativeCoreError("Native tensor arena is closed")
+        if self._arena_handle is None:
+            raise NativeCoreError("Rewind requires a native monotonic arena with byte_budget")
+        self.core.memory_arena_rewind(self._arena_handle, int(mark))
+        self._buffers.clear()
+        self._allocated_bytes = int(mark)
+
+    def reset(self) -> None:
+        """Release all leases in O(1); all previously returned views are invalid."""
+        if self._closed:
+            raise NativeCoreError("Native tensor arena is closed")
+        if self._arena_handle is None:
+            raise NativeCoreError("Reset requires a native monotonic arena with byte_budget")
+        self.core.reset_memory_arena(self._arena_handle)
+        self._buffers.clear()
+        self._allocated_bytes = 0
+
     def close(self) -> None:
         if self._closed:
             return
-        for address, _, _ in self._buffers.values():
-            self.core.library.kr_memory_free_aligned(ctypes.c_void_p(address))
+        if self._arena_handle is not None:
+            self.core.destroy_memory_arena(self._arena_handle)
+            self._arena_handle = None
+        else:
+            for address, _, _ in self._buffers.values():
+                self.core.library.kr_memory_free_aligned(ctypes.c_void_p(address))
         self._buffers.clear()
         self._allocated_bytes = 0
         self._closed = True
@@ -778,6 +1362,32 @@ class NativeModel:
         if not ok:
             raise self.core.error()
         return float(loss.value)
+
+    def train_steps(self, x: np.ndarray, y: np.ndarray, steps: int) -> float:
+        """Repeat a full-batch update through one native ABI call."""
+        rows = np.ascontiguousarray(x, dtype=np.float32)
+        targets = np.ascontiguousarray(y, dtype=np.float32).reshape(-1)
+        if rows.ndim != 2 or rows.shape != (len(targets), self.features) or len(targets) == 0:
+            raise NativeCoreError("Native train batch shape mismatch")
+        if not 1 <= steps <= 1_000_000:
+            raise NativeCoreError("Native train step count is outside bounds")
+        if not self.core._model_train_steps_available:
+            loss = 0.0
+            for _ in range(steps):
+                loss = self.train_step(rows, targets)
+            return loss
+        loss_value = ctypes.c_float()
+        ok = self.core.library.kr_model_train_steps(
+            self.handle,
+            self._float_pointer(rows),
+            self._float_pointer(targets),
+            len(targets),
+            int(steps),
+            ctypes.byref(loss_value),
+        )
+        if not ok:
+            raise self.core.error()
+        return float(loss_value.value)
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         rows = np.ascontiguousarray(x, dtype=np.float32)
@@ -992,6 +1602,26 @@ class NativeNumericCsvStream:
     def next_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
         if batch_size < 1:
             raise NativeCoreError("Native stream batch size must be positive")
+        needs_feature_lease = self._arena is not None and not self._arena.has_float32(
+            (batch_size, self.features), tag=f"{self.split}.x"
+        )
+        needs_target_lease = self._arena is not None and not self._arena.has_float32(
+            (batch_size,), tag=f"{self.split}.y"
+        )
+        if (
+            self._arena is not None
+            and self._arena.byte_budget is not None
+            and (needs_feature_lease or needs_target_lease)
+            and self.core.batch_planner_available
+        ):
+            statistics = self._arena.stats
+            available_bytes = max(0, int(statistics["capacity_bytes"]) - int(statistics["used_bytes"]))
+            plan = self.core.plan_memory_batch(available_bytes, batch_size, self.features, buffer_count=2)
+            if not plan["fits"]:
+                raise NativeCoreError(
+                    f"Native batch of {batch_size} rows needs {plan['required_bytes']} bytes; "
+                    f"the remaining arena budget supports at most {plan['maximum_rows']} rows"
+                )
         if self._arena is not None:
             x = self._arena.acquire_float32((batch_size, self.features), tag=f"{self.split}.x")
             y = self._arena.acquire_float32((batch_size,), tag=f"{self.split}.y")
