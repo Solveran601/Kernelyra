@@ -24,6 +24,8 @@ _GROUP_HINT = re.compile(r"(?:^|[_\-])(group|user|account|customer|session|conve
 _ID_HINT = re.compile(r"(?:^|[_\-])(id|uuid|guid|key)(?:$|[_\-])", re.I)
 _MAX_COLUMNS = 512
 _MAX_CLASSES = 64
+_TEXT_TABLE_SUFFIXES = {".csv", ".tsv", ".jsonl", ".ndjson"}
+_RECORD_ESTIMATE_BYTES = 8 * 1024 * 1024
 
 
 def _text(value: Any) -> str:
@@ -46,6 +48,45 @@ def _rows(inspection: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(preview, Sequence) or isinstance(preview, str | bytes):
         return []
     return [dict(row) for row in preview if isinstance(row, Mapping)]
+
+
+def estimate_records(path: str | Path, inspection: Mapping[str, Any]) -> int:
+    """Estimate records through one bounded read using the same rule as planning.
+
+    Routers deliberately return only a small preview.  The doctor and the
+    planner must nevertheless agree on the dataset scale because the result
+    controls batching and the variable context chunks.  For newline-delimited
+    tables this function reads at most 8 MiB; all other formats keep the
+    preview-based estimate supplied by their router.
+    """
+    source = Path(path).expanduser().resolve()
+    shape = inspection.get("shape") or []
+    known = inspection.get("rows") or (shape[0] if len(shape) >= 2 else None)
+    if known:
+        return max(1, int(known))
+
+    sampled = max(1, int(inspection.get("sampled_rows") or 1))
+    preview = _rows(inspection)
+    preview_bytes = max(1, sum(len(str(row)) for row in preview))
+    size = int(inspection.get("bytes") or (source.stat().st_size if source.exists() else 0))
+    fallback = max(sampled, int(size / max(1, preview_bytes / max(1, len(preview)))))
+    if not source.is_file() or source.suffix.lower() not in _TEXT_TABLE_SUFFIXES:
+        return fallback
+
+    sample_size = min(size, _RECORD_ESTIMATE_BYTES)
+    try:
+        with source.open("rb") as handle:
+            prefix = handle.read(sample_size)
+    except OSError:
+        return fallback
+
+    lines = prefix.count(b"\n")
+    if source.suffix.lower() in {".csv", ".tsv"}:
+        lines = max(0, lines - 1)
+    if size <= sample_size:
+        return max(sampled, lines + (1 if prefix and not prefix.endswith(b"\n") else 0))
+    bytes_per_record = sample_size / max(1, lines)
+    return max(sampled, int(size / bytes_per_record))
 
 
 def _issue(code: str, severity: str, message: str, **evidence: Any) -> dict[str, Any]:
@@ -194,9 +235,13 @@ def analyze_inspection(
                     missing_rate=stats["missing_rate"],
                 )
             )
-        if column != selected_target and (
-            _ID_HINT.search(column) or (stats["unique_rate"] >= 0.98 and stats["unique_values"] >= 20)
-        ):
+        named_identifier = bool(_ID_HINT.search(column))
+        high_cardinality_category = (
+            stats["inferred_type"] == "categorical"
+            and stats["unique_rate"] >= 0.98
+            and stats["unique_values"] >= 20
+        )
+        if column != selected_target and (named_identifier or high_cardinality_category):
             findings.append(
                 _issue(
                     "identifier_like_feature",
@@ -204,6 +249,8 @@ def analyze_inspection(
                     "This feature looks identifier-like in the sample and can overfit or leak identity.",
                     column=column,
                     unique_rate=stats["unique_rate"],
+                    inferred_type=stats["inferred_type"],
+                    basis="column_name" if named_identifier else "high_cardinality_categorical",
                 )
             )
 
@@ -312,5 +359,14 @@ def analyze_inspection(
 
 def inspect_path(path: str | Path, router: Any, *, target: str | None = None, seed: int = 42) -> dict[str, Any]:
     """Inspect a local path through the existing router, then add data-health evidence."""
-    inspection = router.inspect(Path(path).expanduser().resolve())
-    return {"inspection": inspection, **analyze_inspection(inspection, target=target, seed=seed)}
+    source = Path(path).expanduser().resolve()
+    inspection = router.inspect(source)
+    return {
+        "inspection": inspection,
+        **analyze_inspection(
+            inspection,
+            target=target,
+            records_estimate=estimate_records(source, inspection),
+            seed=seed,
+        ),
+    }

@@ -142,7 +142,23 @@ class TrainingConfig:
     def resources(
         self, *, cpu: int | None = None, ram: int | None = None, gpu: int | None = None, threads: int | None = None
     ) -> Self:
+        """Set resource ceilings as percentages of detected hardware and CPU threads."""
         return self.set(cpu=cpu, ram=ram, gpu=gpu, threads=threads)
+
+    def budget(
+        self,
+        *,
+        cpu_percent: int | None = None,
+        memory_percent: int | None = None,
+        gpu_percent: int | None = None,
+        threads: int | None = None,
+    ) -> Self:
+        """Set the same explicit resource ceilings with self-documenting names.
+
+        Every omitted value remains automatic, so a caller can cap only RAM or
+        CPU without accidentally fixing the rest of the execution plan.
+        """
+        return self.resources(cpu=cpu_percent, ram=memory_percent, gpu=gpu_percent, threads=threads)
 
     def optimizer(self, *, learning_rate: float | None = None, weight_decay: float | None = None) -> Self:
         return self.set(learning_rate=learning_rate, weight_decay=weight_decay)

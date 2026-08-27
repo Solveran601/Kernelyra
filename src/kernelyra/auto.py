@@ -10,7 +10,7 @@ from typing import Any
 
 from .architectures import resolve_training_contract
 from .batch import plan_batch
-from .data_health import analyze_inspection
+from .data_health import analyze_inspection, estimate_records
 from .errors import ConfigurationError, DatasetError, RunError
 from .hardware import (
     execution_policy,
@@ -99,30 +99,6 @@ _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvem
 
 def _stream_limit(policy: Mapping[str, Any], maximum: int) -> int:
     return min(maximum, int(policy["stream_limit"]))
-
-
-def _estimate_text_records(source: Path, size: int, sampled: int, preview_bytes: int, preview_count: int) -> int:
-    """Estimate newline-delimited table rows with at most an 8 MiB read.
-
-    The router intentionally exposes a small preview.  For CSV/TSV/JSONL,
-    counting a bounded prefix gives a much better planning estimate without
-    materialising the dataset or scanning a multi-gigabyte source in full.
-    """
-    if not source.is_file() or source.suffix.lower() not in {".csv", ".tsv", ".jsonl", ".ndjson"}:
-        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
-    sample_size = min(size, 8 * 1024 * 1024)
-    try:
-        with source.open("rb") as handle:
-            prefix = handle.read(sample_size)
-    except OSError:
-        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
-    lines = prefix.count(b"\n")
-    if source.suffix.lower() in {".csv", ".tsv"}:
-        lines = max(0, lines - 1)
-    if size <= sample_size:
-        return max(sampled, lines + (1 if prefix and not prefix.endswith(b"\n") else 0))
-    bytes_per_record = sample_size / max(1, lines)
-    return max(sampled, int(size / bytes_per_record))
 
 
 def _coerce(name: str, value: Any) -> Any:
@@ -377,16 +353,8 @@ class AutoTrainer:
         columns = inspection.get("columns") or []
         shape = inspection.get("shape") or []
         features = max(1, int(shape[1]) if len(shape) >= 2 else len(columns) - 1)
-        sampled = max(1, int(inspection.get("sampled_rows") or 1))
         size = int(inspection.get("bytes") or source.stat().st_size)
-        preview_bytes = max(1, sum(len(str(row)) for row in inspection.get("preview") or []))
-        preview_count = max(1, len(inspection.get("preview") or []))
-        known_records = inspection.get("rows") or (shape[0] if len(shape) >= 2 else None)
-        records = (
-            int(known_records)
-            if known_records
-            else _estimate_text_records(source, size, sampled, preview_bytes, preview_count)
-        )
+        records = estimate_records(source, inspection)
         requested_batch = resolved.values["batch_size"]
         batch = plan_batch(
             records=records,
