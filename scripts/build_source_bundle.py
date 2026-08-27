@@ -40,7 +40,6 @@ SOURCE_DIRS = (
     "examples",
     "native",
     "powershell",
-    "reports",
     "scripts",
     "sdks",
     "src",
