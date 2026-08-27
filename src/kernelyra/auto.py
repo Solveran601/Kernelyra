@@ -49,6 +49,7 @@ _ENV_KEYS = {
     "weight_decay": "KERNELYRA_WEIGHT_DECAY",
     "hidden_layers": "KERNELYRA_HIDDEN_LAYERS",
     "precision": "KERNELYRA_PRECISION",
+    "data_mode": "KERNELYRA_DATA_MODE",
     "data_workers": "KERNELYRA_DATA_WORKERS",
     "prefetch": "KERNELYRA_PREFETCH",
     "evaluation_interval": "KERNELYRA_EVALUATION_INTERVAL",
@@ -80,6 +81,7 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 0.0,
     "hidden_layers": None,
     "precision": "auto",
+    "data_mode": "auto",
     "data_workers": None,
     "prefetch": None,
     "evaluation_interval": None,
@@ -119,7 +121,7 @@ def _coerce(name: str, value: Any) -> Any:
         if any(item < 1 or item > 65_536 for item in result):
             raise ConfigurationError("hidden_layers values must be between 1 and 65536")
         return result
-    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision"}:
+    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision", "data_mode"}:
         return str(value).strip().lower()
     return str(value)
 
@@ -440,13 +442,24 @@ class AutoTrainer:
         # buffers can coexist. Select the streaming path from the resolved
         # hardware profile instead of waiting for the import hard limit.
         stream_limit = _stream_limit(policy, self.workspace.datasets.MAX_IMPORT_BYTES)
-        data_mode = "stream" if source.is_dir() or size > stream_limit else "memory"
+        requested_data_mode = resolved.values["data_mode"]
+        if requested_data_mode not in {"auto", "memory", "stream"}:
+            raise ConfigurationError("data_mode must be auto, memory or stream")
+        automatic_data_mode = "stream" if source.is_dir() or size > stream_limit else "memory"
+        if requested_data_mode == "memory" and automatic_data_mode == "stream":
+            raise ConfigurationError(
+                "data_mode='memory' is unsafe for this dataset; use data_mode='stream' or automatic mode"
+            )
+        data_mode = automatic_data_mode if requested_data_mode == "auto" else requested_data_mode
         if data_mode == "stream" and source.is_file() and source.suffix.lower() not in streaming_formats:
             raise DatasetError(
                 f"Dataset exceeds the in-memory limit, but {source.suffix or 'this format'} has no streaming reader"
             )
         if data_mode == "stream":
-            warnings.append("Dataset will use the external streaming path; the source file must remain available")
+            origin = "explicit" if requested_data_mode == "stream" else "automatic"
+            warnings.append(
+                f"Dataset will use the external streaming path ({origin}); the source file must remain available"
+            )
         data_health = analyze_inspection(
             inspection,
             target=str(target) if target is not None else None,
@@ -460,6 +473,10 @@ class AutoTrainer:
         chunk_policy = dict(data_contract["chunk_policy"])
         warnings.extend(str(item) for item in data_health["warnings"])
         if split_policy["strategy"] == "context":
+            if requested_data_mode == "memory":
+                raise ConfigurationError(
+                    "data_mode='memory' cannot preserve group/context boundaries; use data_mode='stream' or automatic mode"
+                )
             if source.is_dir() or source.suffix.lower() in streaming_formats:
                 if data_mode != "stream":
                     data_mode = "stream"

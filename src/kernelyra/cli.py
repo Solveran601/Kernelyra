@@ -94,6 +94,11 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--weight-decay", type=float)
         item.add_argument("--hidden-layers", help="Comma-separated widths, for example 128,64,32")
         item.add_argument("--precision", choices=["auto", "float64", "float32", "float16", "bfloat16"])
+        item.add_argument(
+            "--data-mode",
+            choices=["auto", "memory", "stream"],
+            help="Automatic choice, fastest safe in-memory path, or bounded external streaming",
+        )
         item.add_argument("--cpu", type=int, help="CPU limit in percent")
         item.add_argument("--ram", type=int, help="RAM limit in percent")
         item.add_argument("--gpu", type=int, help="GPU limit in percent")
@@ -526,7 +531,7 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
 
         names = (
             "target", "task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "batch_size", "max_steps", "target_metric",
-            "learning_rate", "weight_decay", "hidden_layers", "precision", "cpu", "ram", "gpu", "threads",
+            "learning_rate", "weight_decay", "hidden_layers", "precision", "data_mode", "cpu", "ram", "gpu", "threads",
             "data_workers", "prefetch", "seed", "evaluation_interval", "min_improvement",
             "degradation_margin", "degradation_patience", "early_stopping_patience",
             "target_patience", "accept_batch_risk", "name",

@@ -68,6 +68,7 @@ function Get-KernelyraPlan {
         [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
+        [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
@@ -75,7 +76,7 @@ function Get-KernelyraPlan {
         [string]$Workspace = "."
     )
 
-    $arguments = @("plan", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
+    $arguments = @("plan", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
     if ($Target) { $arguments += @("--target", $Target) }
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
@@ -89,6 +90,7 @@ function Start-KernelyraTraining {
         [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
+        [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
@@ -98,7 +100,7 @@ function Start-KernelyraTraining {
         [string]$Workspace = "."
     )
 
-    $arguments = @("train", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
+    $arguments = @("train", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
     if ($Target) { $arguments += @("--target", $Target) }
     if ($PSCmdlet.ShouldProcess($Dataset, "Train Kernelyra model")) {
         Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments

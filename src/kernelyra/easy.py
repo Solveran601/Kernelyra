@@ -171,8 +171,21 @@ class TrainingConfig:
             values["precision"] = precision
         return self.set(**values)
 
-    def data(self, *, workers: int | None = None, prefetch: int | None = None) -> Self:
-        return self.set(data_workers=workers, prefetch=prefetch)
+    def data(
+        self,
+        *,
+        mode: str | None = None,
+        workers: int | None = None,
+        prefetch: int | None = None,
+    ) -> Self:
+        """Choose automatic, in-memory or external-streaming input handling.
+
+        ``memory`` is the fastest path when the complete dataset fits inside
+        Kernelyra's safety limit.  ``stream`` keeps RAM bounded and preserves
+        context-group splits for formats with a streaming reader.  ``auto``
+        retains the planner's safe recommendation.
+        """
+        return self.set(data_mode=mode, data_workers=workers, prefetch=prefetch)
 
     def stopping(
         self,
