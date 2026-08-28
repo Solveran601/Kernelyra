@@ -228,7 +228,10 @@ def _worker_main(
             try:
                 if command == "train_step":
                     result = backend.train_step(session, int(payload["batch_size"]))
-                    response = asdict(result)
+                    response = {
+                        **asdict(result),
+                        "native_execution": session.metadata.get("native_execution"),
+                    }
                     response_events.append(_event("progress", response))
                 elif command == "train_steps":
                     count = max(1, min(100, int(payload["steps"])))
@@ -243,7 +246,11 @@ def _worker_main(
                             result = StepResult(
                                 loss=current.loss, samples=result.samples + current.samples
                             )
-                    response = {**asdict(result), "steps": count}
+                    response = {
+                        **asdict(result),
+                        "steps": count,
+                        "native_execution": session.metadata.get("native_execution"),
+                    }
                     response_events.append(_event("progress", response))
                 elif command == "evaluate":
                     result = backend.evaluate(session)
@@ -475,11 +482,18 @@ class ProcessBackendWorker:
         return dict(response.get("payload") or {})
 
     def train_step(self, batch_size: int) -> StepResult:
-        return StepResult(**self._request("train_step", {"batch_size": batch_size}))
+        payload = self._request("train_step", {"batch_size": batch_size})
+        native_execution = payload.pop("native_execution", None)
+        if isinstance(native_execution, dict):
+            self.metadata["native_execution"] = native_execution
+        return StepResult(**payload)
 
     def train_steps(self, batch_size: int, steps: int) -> StepResult:
         payload = self._request("train_steps", {"batch_size": batch_size, "steps": steps})
         executed_steps = int(payload.pop("steps", 0))
+        native_execution = payload.pop("native_execution", None)
+        if isinstance(native_execution, dict):
+            self.metadata["native_execution"] = native_execution
         if executed_steps != steps:
             self._terminate_tree("train_steps_count_mismatch")
             raise WorkerProtocolError(

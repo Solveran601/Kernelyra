@@ -19,6 +19,18 @@ COMPONENT_ZIG_MEMORY = 1
 COMPONENT_FORTRAN_NUMERIC = 2
 COMPONENT_RUST_POLICY = 4
 COMPONENT_ALL = 7
+EXECUTION_C_ABI = 1
+EXECUTION_CPP_DISPATCH = 2
+EXECUTION_RUST_POLICY = 4
+EXECUTION_FORTRAN_NUMERIC = 8
+EXECUTION_ZIG_MEMORY = 16
+_EXECUTION_ENGINES = (
+    (EXECUTION_C_ABI, "c-abi"),
+    (EXECUTION_CPP_DISPATCH, "cpp-dispatch"),
+    (EXECUTION_RUST_POLICY, "rust-policy"),
+    (EXECUTION_FORTRAN_NUMERIC, "fortran-numeric"),
+    (EXECUTION_ZIG_MEMORY, "zig-memory"),
+)
 _TASK_IDS = {
     TaskType.BINARY_CLASSIFICATION.value: 0,
     TaskType.MULTICLASS_CLASSIFICATION.value: 1,
@@ -590,6 +602,10 @@ class NativeCore:
                 ctypes.POINTER(ctypes.c_float),
             ]
             library.kr_model_train_steps.restype = ctypes.c_int
+        self._model_execution_mask_available = hasattr(library, "kr_model_execution_mask")
+        if self._model_execution_mask_available:
+            library.kr_model_execution_mask.argtypes = [ctypes.c_void_p]
+            library.kr_model_execution_mask.restype = ctypes.c_uint32
         library.kr_model_predict.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -1388,6 +1404,21 @@ class NativeModel:
         if not ok:
             raise self.core.error()
         return float(loss_value.value)
+
+    def execution_trace(self) -> dict[str, Any]:
+        """Return engines that have actually participated for this model handle.
+
+        The result is cumulative: an engine appears only after the native call
+        path has executed it.  Older cores report an empty trace instead of a
+        guessed value.
+        """
+        if not self.handle or not self.core._model_execution_mask_available:
+            return {"mask": 0, "engines": []}
+        mask = int(self.core.library.kr_model_execution_mask(self.handle))
+        return {
+            "mask": mask,
+            "engines": [name for bit, name in _EXECUTION_ENGINES if mask & bit],
+        }
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         rows = np.ascontiguousarray(x, dtype=np.float32)

@@ -576,6 +576,12 @@ class TrainingRuntime:
             run.step += executed_steps
             run.samples_seen += step.samples
             run.loss = step.loss
+            native_execution = worker.metadata.get("native_execution")
+            if isinstance(native_execution, dict):
+                run.environment_manifest = {
+                    **run.environment_manifest,
+                    "native_execution": native_execution,
+                }
             if run.step % evaluation_interval != 0 and run.step < run.max_steps:
                 now = time.monotonic()
                 trace.add("progress", step=run.step, loss=run.loss, samples_seen=run.samples_seen)

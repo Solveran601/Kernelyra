@@ -10,7 +10,7 @@
 
 <p align="center"><strong>Нативное обучение табличных данных с контролем ресурсов.</strong></p>
 
-Kernelyra **0.5.0a3 (V3 alpha)** — локальная библиотека для обучения табличных
+Kernelyra **0.6.0a1 (alpha)** — локальная библиотека для обучения табличных
 моделей из терминала. Один и тот же путь планирования доступен в CLI, Python
 API, PowerShell-модуле и JSONL-протоколе для поставляемых SDK.
 
@@ -30,7 +30,10 @@ API, PowerShell-модуле и JSONL-протоколе для поставля
 - Прямое обучение на CSV, TSV, JSONL/NDJSON, числовых NPZ и опциональном
   Parquet.
 - Встроенные native и NumPy backend; PyTorch и TensorFlow/Keras — опционально,
-  когда они установлены.
+  когда они установлены. В native-core есть пять наблюдаемых ролей: C ABI,
+  C++ dispatcher, Rust policy, Fortran numeric kernels и Zig memory kernels.
+  Поле `native_execution` показывает только движки, которые действительно
+  участвовали в вызовах конкретной модели; оно не считает все пять «по умолчанию».
 - Явный выбор выполнения `cpu` или `hybrid`, заданные разработчиком лимиты
   CPU/RAM/GPU/потоков, четыре встроенных пакета алгоритмов (`careful`,
   `balanced`, `throughput`, `maximum`) и проверяемые пользовательские паки на
@@ -77,6 +80,7 @@ TensorFlow/Keras.
 ## CLI из PowerShell
 
 ```powershell
+python -m kernelyra version
 python -m kernelyra doctor
 python -m kernelyra execution
 python -m kernelyra plan .\data\train.csv --target label --execution cpu --pack throughput --cpu 100 --ram 85 --threads 12
@@ -134,26 +138,29 @@ Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack thro
 
 ## Воспроизводимый CPU-бенчмарк
 
-Один локальный однопоточный тест на MSI Modern 14 C12M (Core i5-1235U,
-Windows 11, Python 3.12.9, NumPy 2.1.3) измерял 1 000 одинаковых полнобатчевых
-float32-обновлений логистической модели на матрице 8 192 × 64. Выполнено девять
-чередующихся прогонов.
+Один локальный однопоточный тест на MSI Modern 14 C12M (Intel Core i5-1235U,
+Windows 11, Python 3.12.10, NumPy 2.1.3) содержит девять чередующихся прогонов
+после одного прогрева. В нём две узкие float32-нагрузки; это не общий рейтинг
+фреймворков.
 
-| Реализация | Медиана | Шагов/с | Accuracy |
-|---|---:|---:|---:|
-| Kernelyra native 3.4 | 0,133655 с | 7 482,0 | 99,0356% |
-| NumPy 2.1.3, OpenBLAS 1 поток | 0,120028 с | 8 331,4 | 99,0356% |
+| Нагрузка | Медиана Kernelyra | Медиана NumPy | Результат только для этой машины |
+|---|---:|---:|---|
+| 1 000 одинаковых logistic updates, 8 192 × 64 | 0,1337745 с | 0,1300291 с | NumPy быстрее в `1,029×`; accuracy одинакова (99,0356%) |
+| Copy → impute → normalize → clip, 8 192 × 64 | 0,0022132 с | 0,0023485 с | Kernelyra быстрее в `1,061×`; 75 repaired values и одинаковый checksum |
 
-В этом тесте NumPy быстрее в `1,114×`. Loss Kernelyra отличается только на
-`1,49e-8`, но результат ничего не доказывает для другого железа, датасетов,
-моделей и нагрузок. См. [методику и runner](benchmarks/cpu/README.md) и
-[сырой JSON девяти прогонов](benchmarks/cpu/results/modern-14-c12m-v0.5.0a3.json).
+В случае обучения финальная accuracy у native и NumPy совпадает, абсолютная
+разница финального loss — `1,49e-8`. Отдельная нетаймируемая проверка
+random-batch пути увидела все пять native-ролей (`mask: 31`). Это доказательство
+участия компонентов, но оно не входит в измерение скорости. Эти результаты не
+доказывают скорость на другом железе, датасете, модели, лимите памяти или
+нагрузке. См. [методику и runner](benchmarks/cpu/README.md) и
+[сырой JSON девяти прогонов](benchmarks/cpu/results/modern-14-c12m-v0.6.0a1.json).
 
 <a id="limits"></a>
 
 ## Ограничения и граница roadmap
 
-Проверяемая цель релиза — **Windows x64 с Python 3.11–3.13**. Kernelyra 0.5
+Проверяемая цель релиза — **Windows x64 с Python 3.11–3.13**. Kernelyra 0.6
 обучает только табличные модели. В ней нет встроенных тренеров для LLM,
 изображений, аудио, видео, 3D и других модальностей. Распознавание расширения
 не означает, что его можно извлечь, обучать на нём модель или использовать как

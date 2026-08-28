@@ -45,6 +45,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/chunks.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/hash.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/sampler.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/split.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/text_chunks.rs"
   VERBATIM)
@@ -77,6 +78,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_transfer.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_guard.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_normalize.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_preprocess.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_reduce.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_repair.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_rows.zig"

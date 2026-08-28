@@ -13,7 +13,7 @@
 
 <p align="center"><strong>Native-first, resource-aware training for tabular data.</strong></p>
 
-Kernelyra **0.5.0a3 (V3 alpha)** is a local terminal-first library for
+Kernelyra **0.6.0a1 (alpha)** is a local terminal-first library for
 tabular model training. The same planning path is available through the CLI,
 Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 
@@ -32,7 +32,10 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 - Direct training from CSV, TSV, JSONL/NDJSON, numeric NPZ, and optional
   Parquet input.
 - Bundled native and NumPy backends; optional PyTorch and TensorFlow/Keras
-  backends when installed.
+  backends when installed. The native core has five observable roles: C ABI,
+  C++ dispatch, Rust policy, Fortran numeric kernels, and Zig memory kernels.
+  A model's `native_execution` trace reports engines that actually participated
+  in its native calls; it never guesses that every engine ran.
 - Explicit `cpu` or `hybrid` execution, developer-set CPU/RAM/GPU/thread
   limits, four built-in algorithm packs (`careful`, `balanced`, `throughput`,
   `maximum`), and validated user packs cloned from them. Packs alter real
@@ -79,6 +82,7 @@ TensorFlow/Keras.
 ## CLI from PowerShell
 
 ```powershell
+python -m kernelyra version
 python -m kernelyra doctor
 python -m kernelyra execution
 python -m kernelyra plan .\data\train.csv --target label --execution cpu --pack throughput --cpu 100 --ram 85 --threads 12
@@ -136,26 +140,30 @@ Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack thro
 
 ## Reproducible CPU evidence
 
-One local one-thread benchmark on an MSI Modern 14 C12M (Core i5-1235U,
-Windows 11, Python 3.12.9, NumPy 2.1.3) measured 1,000 identical full-batch
-float32 logistic updates over an 8,192 × 64 matrix, with nine alternating runs.
+One local one-thread benchmark on an MSI Modern 14 C12M (Intel Core i5-1235U,
+Windows 11, Python 3.12.10, NumPy 2.1.3) used nine alternating runs after one
+warm-up. It measures two narrow float32 cases; neither is a general framework
+comparison.
 
-| Implementation | Median | Steps/s | Accuracy |
-|---|---:|---:|---:|
-| Kernelyra native 3.4 | 0.133655 s | 7,482.0 | 99.0356% |
-| NumPy 2.1.3, OpenBLAS 1 thread | 0.120028 s | 8,331.4 | 99.0356% |
+| Workload | Kernelyra median | NumPy median | Result for this machine only |
+|---|---:|---:|---|
+| 1,000 identical logistic updates, 8,192 × 64 | 0.1337745 s | 0.1300291 s | NumPy `1.029×` faster; identical accuracy (99.0356%) |
+| Copy → impute → normalize → clip, 8,192 × 64 | 0.0022132 s | 0.0023485 s | Kernelyra `1.061×` faster; 75 repaired values and equal checksum |
 
-NumPy was `1.114×` faster in this case. Kernelyra's loss differed by only
-`1.49e-8`, but this result does not prove performance on other hardware,
-datasets, models or workloads. See the [method and runner](benchmarks/cpu/README.md)
-and [raw nine-run JSON](benchmarks/cpu/results/modern-14-c12m-v0.5.0a3.json).
+The native model and NumPy model have the same final accuracy in the training
+case; the absolute final-loss difference is `1.49e-8`. A separate, untimed
+pipeline probe observed all five native roles (`mask: 31`) in the random-batch
+path. It is capability evidence and is excluded from both timing results.
+These measurements do not prove performance on other hardware, datasets,
+models, memory limits or workloads. See the [method and runner](benchmarks/cpu/README.md)
+and [raw nine-run JSON](benchmarks/cpu/results/modern-14-c12m-v0.6.0a1.json).
 
 <a id="limits"></a>
 
 ## Limits and roadmap boundary
 
 The tested release target is **Windows x64 with Python 3.11–3.13**. Kernelyra
-0.5 trains tabular models only. It does not include built-in trainers for LLMs,
+0.6 trains tabular models only. It does not include built-in trainers for LLMs,
 images, audio, video, 3D, or other modalities. Recognizing an extension is not
 the same as extracting it, training it, or supporting it as a model container.
 `hybrid` requires a detected accelerator and an installed compatible optional

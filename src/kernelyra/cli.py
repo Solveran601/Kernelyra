@@ -15,7 +15,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.5.0a3"
+VERSION = "0.6.0a1"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4

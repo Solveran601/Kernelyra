@@ -47,6 +47,9 @@ void kr_zig_add_f32(float* destination, const float* source, size_t values);
 float kr_zig_sum_f32(const float* values, size_t count);
 float kr_zig_max_abs_f32(const float* values, size_t count);
 uint64_t kr_zig_repair_nonfinite_f32(float* data, size_t rows, size_t features, const float* means);
+uint64_t kr_zig_preprocess_f32(
+    float* data, size_t rows, size_t features, const float* means, const float* stds,
+    float clip_limit);
 uint32_t kr_zig_gather_rows_f32(
     const float* source, size_t source_rows, size_t features, const size_t* selected,
     size_t selected_rows, float* destination);
@@ -109,6 +112,8 @@ size_t kr_rust_policy_next_adaptive_chunk_size(
     size_t remaining_records, size_t target_records, size_t minimum_records,
     size_t maximum_records, uint64_t sequence, uint64_t seed,
     uint32_t memory_pressure_percent, uint32_t aggression_percent);
+size_t kr_rust_policy_sample_indices(
+    size_t rows, size_t requested, uint64_t* state, size_t* output);
 size_t kr_rust_policy_plan_text_chunks(
     const uint8_t* text, size_t length, size_t minimum_bytes, size_t target_bytes,
     size_t maximum_bytes, size_t overlap_bytes, kr_text_chunk* output, size_t capacity);
@@ -148,6 +153,7 @@ struct Model {
   std::vector<float> parallel_scratch;
   std::vector<float> errors;
   uint64_t rng_state = 0;
+  uint32_t execution_mask = KR_EXECUTION_C_ABI | KR_EXECUTION_CPP_DISPATCH;
 };
 
 struct NumericCsv {
@@ -817,9 +823,9 @@ void update_weights(
 }
 
 bool supported_model_abi(uint32_t version) {
-  // ABI 6-8 add standalone memory exports; kr_model_config keeps its ABI-5
+  // ABI 6-9 add standalone memory exports; kr_model_config keeps its ABI-5
   // layout.  Accepting all of them preserves released Python model callers.
-  return version == 5U || version == 6U || version == 7U || version == KR_ABI_VERSION;
+    return version == 5U || version == 6U || version == 7U || version == 8U || version == KR_ABI_VERSION;
 }
 
 bool valid_model(const Model* model) {
@@ -940,6 +946,7 @@ int train_regression_parallel(
   const float target_std = std::abs(model.config.target_std) > 1.0e-12F ? model.config.target_std : 1.0F;
 #if KR_HAS_FORTRAN_NUMERIC
   if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    model.execution_mask |= KR_EXECUTION_FORTRAN_NUMERIC;
     model.errors.resize(rows);
     double total_loss = 0.0;
     float bias_gradient = 0.0F;
@@ -1020,6 +1027,7 @@ int train_binary(
 #endif
 #if KR_HAS_FORTRAN_NUMERIC
   if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC) && !prefer_fused_simd(rows, features)) {
+    model.execution_mask |= KR_EXECUTION_FORTRAN_NUMERIC;
     model.errors.resize(rows);
     int status = 0;
     kr_fortran_binary_train_f32(
@@ -1066,6 +1074,7 @@ int train_regression(
 #endif
 #if KR_HAS_FORTRAN_NUMERIC
   if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC) && !prefer_fused_simd(rows, features)) {
+    model.execution_mask |= KR_EXECUTION_FORTRAN_NUMERIC;
     model.errors.resize(rows);
     int status = 0;
     kr_fortran_regression_train_f32(
@@ -1190,6 +1199,7 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
 #endif
 #if KR_HAS_FORTRAN_NUMERIC
   if (component_enabled(KR_COMPONENT_FORTRAN_NUMERIC)) {
+    model.execution_mask |= KR_EXECUTION_FORTRAN_NUMERIC;
     int status = 0;
     kr_fortran_multiclass_train_f32(
         x, y, rows, features, classes, model.weights.data(), model.bias.data(),
@@ -1278,10 +1288,22 @@ int train_random_step_impl(
     return fail("native random batch does not fit in memory");
   }
   const size_t features = model.config.features;
+#if KR_HAS_RUST_POLICY
+  if (component_enabled(KR_COMPONENT_RUST_POLICY) &&
+      kr_rust_policy_sample_indices(
+          rows, batch_size, &model.rng_state, model.batch_indices.data()) == batch_size) {
+    model.execution_mask |= KR_EXECUTION_RUST_POLICY;
+    for (size_t sample = 0; sample < batch_size; ++sample) {
+      model.batch_y[sample] = y[model.batch_indices[sample]];
+    }
+  } else
+#endif
+  {
   for (size_t sample = 0; sample < batch_size; ++sample) {
     const size_t selected = static_cast<size_t>(next_random(model.rng_state) % rows);
     model.batch_indices[sample] = selected;
     model.batch_y[sample] = y[selected];
+  }
   }
 #if KR_HAS_ZIG_MEMORY
   if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
@@ -1289,6 +1311,7 @@ int train_random_step_impl(
                                model.batch_x.data()) == 0U) {
       return fail("Zig batch gather rejected the selected rows");
     }
+    model.execution_mask |= KR_EXECUTION_ZIG_MEMORY;
   } else
 #endif
   {
@@ -1304,7 +1327,7 @@ int train_random_step_impl(
 
 extern "C" {
 
-const char* kr_core_version(void) { return "kernelyra-native/3.4-adaptive-pack-core"; }
+const char* kr_core_version(void) { return "kernelyra-native/3.5-fused-pipeline-core"; }
 
 const char* kr_core_features(void) {
 #if KR_X86_GNU_SIMD
@@ -1480,6 +1503,11 @@ int kr_preprocess_f32(
   uint64_t repaired = 0U;
   uint64_t zig_repaired = 0U;
 #if KR_HAS_ZIG_MEMORY
+  if (impute && normalize && clip && component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
+    zig_repaired = kr_zig_preprocess_f32(data, rows, features, means, stds, clip_limit);
+    if (repaired_values != nullptr) *repaired_values = zig_repaired;
+    return 1;
+  }
   if (impute && component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
     zig_repaired = kr_zig_repair_nonfinite_f32(data, rows, features, means);
   }
@@ -2019,6 +2047,11 @@ int kr_model_import(void* handle, const float* weights, size_t weight_count, con
   std::copy(weights, weights + weight_count, model->weights.begin());
   std::copy(bias, bias + bias_count, model->bias.begin());
   return 1;
+}
+
+uint32_t kr_model_execution_mask(const void* handle) {
+  const Model* model = static_cast<const Model*>(handle);
+  return valid_model(model) ? model->execution_mask : 0U;
 }
 
 void* kr_csv_load_numeric(const char* path_utf8, const char* target_utf8, char delimiter) {

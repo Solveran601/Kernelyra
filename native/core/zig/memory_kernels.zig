@@ -7,6 +7,7 @@ const budget = @import("memory_budget.zig");
 const arithmetic = @import("memory_arithmetic.zig");
 const guard = @import("memory_guard.zig");
 const normalize = @import("memory_normalize.zig");
+const preprocess = @import("memory_preprocess.zig");
 const reduce = @import("memory_reduce.zig");
 const repair = @import("memory_repair.zig");
 const row_gather = @import("memory_rows.zig");
@@ -72,6 +73,17 @@ export fn kr_zig_normalize_f32(
     means: [*]const f32,
     stds: [*]const f32,
 ) void { normalize.normalizeF32(data, rows, features, means, stds); }
+
+/// Fused matrix preprocessing used when repair, normalization and clipping are
+/// all requested. It traverses the source matrix exactly once.
+export fn kr_zig_preprocess_f32(
+    data: [*]f32,
+    rows: usize,
+    features: usize,
+    means: [*]const f32,
+    stds: [*]const f32,
+    clip_limit: f32,
+) u64 { return preprocess.preprocessF32(data, rows, features, means, stds, clip_limit); }
 
 export fn kr_zig_copy_f32(destination: [*]f32, source: [*]const f32, values: usize) void { transfer.copyF32(destination, source, values); }
 

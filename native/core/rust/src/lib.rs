@@ -11,6 +11,7 @@ mod adaptive;
 mod chunks;
 mod hash;
 mod signature;
+mod sampler;
 mod split;
 mod text_chunks;
 
@@ -73,6 +74,29 @@ pub extern "C" fn kr_rust_next_adaptive_chunk_size(
     )
 }
 
+/// Fill a native mini-batch index buffer without allocating. The C++ bridge
+/// passes its persistent RNG state, so sampling remains deterministic across
+/// Python, C and C++ callers and does not create a Python-side index array.
+///
+/// # Safety
+/// `state` and `output` must be valid writable pointers. `output` must point
+/// to at least `requested` `usize` elements.
+#[unsafe(export_name = "kr_rust_policy_sample_indices")]
+pub unsafe extern "C" fn kr_rust_sample_indices(
+    rows: usize,
+    requested: usize,
+    state: *mut u64,
+    output: *mut usize,
+) -> usize {
+    if rows == 0 || requested == 0 || state.is_null() || output.is_null() {
+        return 0;
+    }
+    let rng_state = unsafe { &mut *state };
+    let destination = unsafe { core::slice::from_raw_parts_mut(output, requested) };
+    sampler::fill_indices(rows, rng_state, destination);
+    requested
+}
+
 /// Classify an untrusted file prefix without parsing or allocating from it.
 ///
 /// # Safety
@@ -121,5 +145,17 @@ mod tests {
         assert_eq!(signature::classify(b"\x89PNG\r\n\x1a\npixels"), signature::PNG);
         assert_eq!(signature::classify(b"a,b\n1,2\n"), signature::DELIMITED_TEXT);
         assert_eq!(signature::classify(&[0; 32]), signature::UNKNOWN);
+    }
+
+    #[test]
+    fn sampler_is_deterministic_and_bounded() {
+        let mut first_state = 7;
+        let mut second_state = 7;
+        let mut first = [0_usize; 32];
+        let mut second = [0_usize; 32];
+        sampler::fill_indices(17, &mut first_state, &mut first);
+        sampler::fill_indices(17, &mut second_state, &mut second);
+        assert_eq!(first, second);
+        assert!(first.iter().all(|index| *index < 17));
     }
 }

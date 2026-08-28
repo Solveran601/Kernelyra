@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-enum { KR_ABI_VERSION = 8 };
+enum { KR_ABI_VERSION = 9 };
 enum { KR_TASK_BINARY = 0, KR_TASK_MULTICLASS = 1, KR_TASK_REGRESSION = 2 };
 enum { KR_SPLIT_TRAIN = 0, KR_SPLIT_VALIDATION = 1, KR_SPLIT_TEST = 2 };
 enum {
@@ -26,6 +26,13 @@ enum {
   KR_PREPROCESS_IMPUTE_NONFINITE = 1U,
   KR_PREPROCESS_NORMALIZE = 2U,
   KR_PREPROCESS_CLIP = 4U
+};
+enum {
+  KR_EXECUTION_C_ABI = 1U,
+  KR_EXECUTION_CPP_DISPATCH = 2U,
+  KR_EXECUTION_RUST_POLICY = 4U,
+  KR_EXECUTION_FORTRAN_NUMERIC = 8U,
+  KR_EXECUTION_ZIG_MEMORY = 16U
 };
 
 typedef struct kr_model_config {
@@ -184,6 +191,8 @@ KR_API int kr_model_export(
     const void* handle, float* weights, size_t weight_count, float* bias, size_t bias_count);
 KR_API int kr_model_import(
     void* handle, const float* weights, size_t weight_count, const float* bias, size_t bias_count);
+/* Bit mask of engines used by this model since it was created. */
+KR_API uint32_t kr_model_execution_mask(const void* handle);
 
 KR_API void* kr_csv_load_numeric(const char* path_utf8, const char* target_utf8, char delimiter);
 KR_API void kr_csv_destroy(void* handle);

@@ -1,9 +1,8 @@
 KERNELYRA — ЕДИНЫЙ СПРАВОЧНИК ПОЛЬЗОВАТЕЛЯ И ИНТЕГРАТОРА
 ===========================================================
 
-Статус: исходная ветка разработки после 0.5.0a3 (V3 alpha). Базовый
-опубликованный релиз — 0.5.0a3. Поля data_mode и TrainingConfig.budget
-описаны по текущему исходному коду и попадут в релиз только после публикации.
+Статус: 0.6.0a1 (alpha) — локально проверенный исходный выпуск. Публикация на
+GitHub/PyPI наступает только после отдельной отправки тегов и артефактов.
 Этот файл — единственный полный справочник; README остаются краткими.
 
 1. НАЗНАЧЕНИЕ И ЧЕСТНЫЕ ГРАНИЦЫ
@@ -366,6 +365,43 @@ Data Doctor и датасеты:
   kernelyra workspace import-manifest PATH
   kernelyra rpc [--config kernelyra.toml]
   kernelyra mcp [--config kernelyra.toml]
+
+
+8.1 NATIVE-ЯДРА И ТРАССА ВЫПОЛНЕНИЯ 0.6
+-----------------------------------------
+
+У native backend пять разных ролей, а не пять независимых библиотек, которые
+нужно вручную запускать:
+
+  c-abi             — стабильная граница C ABI;
+  cpp-dispatch      — выбор SIMD/OpenMP и безопасного fallback;
+  rust-policy       — детерминированные split/chunk policies и random sampler;
+  fortran-numeric   — переносимые dense gradient/update kernels;
+  zig-memory        — bounded memory, preprocessing и batch gather.
+
+`kernelyra native status` сообщает, что DLL собрана с компонентами и какие
+компоненты включены. Это НЕ является доказательством их использования в каждом
+вызове. В 0.6 у NativeModel есть накопительная фактическая трасса:
+
+  from kernelyra.native_core import NativeCore, NativeModel
+  import numpy as np
+
+  core = NativeCore()
+  x = np.ascontiguousarray(np.random.default_rng(7).normal(size=(128, 8)), dtype=np.float32)
+  y = np.ascontiguousarray((x[:, 0] > 0).astype(np.float32))
+  with NativeModel(task="binary_classification", features=8, threads=1, core=core) as model:
+      loss = model.train_random_step(x, y, batch_size=32)
+      print(model.execution_trace())
+
+При полном включённом core этот короткий random-batch путь наблюдает mask 31 и
+все пять имён. Большой full-batch путь может намеренно выбрать C++ AVX2/FMA и
+не вызывать Rust/Zig sampler/gather; это нормальная оптимизация, а не ошибка.
+В AutoTrainer последняя трасса сохраняется в session.metadata["native_execution"].
+
+Fused preprocessing доступен через NativeCore.preprocess_f32(...): при
+одновременных impute + normalize + clip Zig выполняет совместимую float32
+операцию за один проход. При других комбинациях флагов остаётся проверяемый
+fallback. Эта деталь не расширяет список поддерживаемых форматов или моделей.
 
 
 9. POWERSHELL

@@ -184,6 +184,7 @@ class NativeBackend(NumpyBackend):
             loss = self._model(session).train_random_step(session.train_x, session.train_y, batch_size)
         if not np.isfinite(loss):
             raise FloatingPointError("NaN guard: native loss became non-finite")
+        session.metadata["native_execution"] = self._model(session).execution_trace()
         return StepResult(loss=loss, samples=batch_size)
 
     def train_steps(self, session: TrainingSession, batch_size: int, steps: int) -> StepResult:
@@ -203,6 +204,7 @@ class NativeBackend(NumpyBackend):
                 samples += len(yb)
         if not np.isfinite(loss):
             raise FloatingPointError("NaN guard: native loss became non-finite")
+        session.metadata["native_execution"] = self._model(session).execution_trace()
         return StepResult(loss=loss, samples=samples)
 
     def evaluate(self, session: TrainingSession) -> EvaluationResult:

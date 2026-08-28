@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0a1 — 2026-08-28
+
+- Added a fused Zig preprocessing route for the public `impute → normalize →
+  clip` operation. It performs the compatible float32 transform in one native
+  traversal when all three options are requested, while the checked fallback
+  remains available for every other flag combination.
+- Added the Rust deterministic minibatch sampler to the native random-batch
+  path and retained the C++ sampler as a checked fallback. Zig gathers the
+  selected rows and the existing Fortran dense kernels execute the portable
+  numeric update; the C ABI/C++ dispatcher remains the ownership boundary.
+- Added a per-model `native_execution` trace. It records native engines that
+  actually ran and never represents a compiled or enabled component as proof
+  of execution.
+- Strengthened the wide Fortran gradient reduction with OpenMP SIMD and
+  double-precision accumulation before the float32 gradient writeback.
+- Expanded the maintained CPU evidence into two comparable workloads: dense
+  binary training and fused preprocessing. The raw JSON includes all runs,
+  runtime metadata, correctness checks, and an explicitly untimed five-engine
+  capability probe. No universal performance claim is made.
+
 ## 0.5.0a3 — 2026-08-27
 
 - Added immutable built-in algorithm packs plus validated user packs that can

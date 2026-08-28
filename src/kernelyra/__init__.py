@@ -63,7 +63,7 @@ from .text_training import (
 from .tuning import autotune_execution
 from .workspace import Kernelyra, RunHandle, Workspace
 
-__version__ = "0.5.0a3"
+__version__ = "0.6.0a1"
 
 Dataset = DatasetInfo
 Run = RunInfo
