@@ -31,7 +31,7 @@ $preview = [pscustomobject]@{
     target = $Target
     requested = [pscustomobject]@{ backend = $Backend; execution = $Execution; pack = $Pack; max_steps = $MaxSteps }
     model_format_capabilities = $capabilities.model_formats
-    warning = "0.6.0a1 supports specific fine-tune imports, not arbitrary model containers. Check capability roles before applying."
+    warning = "0.6.0a2 supports specific fine-tune imports, not arbitrary model containers. Check capability roles before applying."
 }
 
 if (-not $Apply) {

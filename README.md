@@ -13,7 +13,7 @@
 
 <p align="center"><strong>Native-first, resource-aware training for tabular data.</strong></p>
 
-Kernelyra **0.6.0a1 (alpha)** is a local terminal-first library for
+Kernelyra **0.6.0a2 (alpha)** is a local terminal-first library for
 tabular model training. The same planning path is available through the CLI,
 Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 
@@ -46,6 +46,10 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
   only `best`.
 - Data Doctor: bounded preflight findings, a signed dataset contract, a
   deterministic split recommendation, and a variable-range chunk plan.
+- Split percentages, an explicit context/group column, and target/minimum/
+  maximum variable-chunk sizes can be set through Python, CLI, PowerShell, or
+  TOML. Streaming uses those exact values; a context key is excluded from
+  learning features and never crosses a split.
 - UTF-8 text preparation: native chunk planning when the native core is
   available, plus a reversible byte tokenizer and causal loss masks for a
   future trainer. This is not an LLM trainer.
@@ -141,7 +145,7 @@ Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack thro
 
 ## Reproducible CPU evidence
 
-One local one-thread benchmark on an MSI Modern 14 C12M (Intel Core i5-1235U,
+Historical 0.6.0a1 one-thread benchmark evidence on an MSI Modern 14 C12M (Intel Core i5-1235U,
 Windows 11, Python 3.12.10, NumPy 2.1.3) used nine alternating runs after one
 warm-up. It measures two narrow float32 cases; neither is a general framework
 comparison.

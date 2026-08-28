@@ -67,6 +67,13 @@ int kr_c_context_split(uint64_t context_key, uint32_t validation_percent, uint32
   return split <= KR_SPLIT_TEST ? (int)split : -1;
 }
 
+int kr_c_context_split_seeded(
+    uint64_t context_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent) {
+  const uint32_t split =
+      kr_rust_split_for_key_seeded(context_key, seed, validation_percent, test_percent);
+  return split <= KR_SPLIT_TEST ? (int)split : -1;
+}
+
 int kr_c_chunk_cursor_init_from_plan(
     kr_c_chunk_cursor* cursor,
     size_t records,

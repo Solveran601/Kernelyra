@@ -513,6 +513,15 @@ class NativeCore:
         library.kr_rust_mix_u64.restype = ctypes.c_uint64
         library.kr_rust_split_for_key.argtypes = [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32]
         library.kr_rust_split_for_key.restype = ctypes.c_uint32
+        self._seeded_context_split_available = hasattr(library, "kr_rust_split_for_key_seeded")
+        if self._seeded_context_split_available:
+            library.kr_rust_split_for_key_seeded.argtypes = [
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            library.kr_rust_split_for_key_seeded.restype = ctypes.c_uint32
         library.kr_rust_next_chunk_size.argtypes = [
             ctypes.c_size_t,
             ctypes.c_size_t,
@@ -736,9 +745,46 @@ class NativeCore:
     def components(self) -> str:
         return str(self.library.kr_core_components().decode("ascii", "replace"))
 
-    def split_for_context(self, context_key: int, validation_percent: int = 15, test_percent: int = 15) -> int:
-        """Assign one stable context key to train (0), validation (1) or test (2)."""
-        split = int(self.library.kr_rust_split_for_key(context_key, validation_percent, test_percent))
+    def split_for_context(
+        self,
+        context_key: int,
+        validation_percent: int = 15,
+        test_percent: int = 15,
+        *,
+        seed: int = 42,
+    ) -> int:
+        """Assign one context key to train (0), validation (1) or test (2).
+
+        A new seeded ABI is used when present.  The old ABI remains usable for
+        installed cores: its native mixer provides the same deterministic
+        calculation, while non-default seeds are mixed into the key here.
+        ``42`` keeps the historical default assignment unchanged.
+        """
+        validation_percent = int(validation_percent)
+        test_percent = int(test_percent)
+        if (
+            validation_percent < 0
+            or test_percent < 0
+            or validation_percent > 95
+            or test_percent > 95
+            or validation_percent + test_percent > 95
+        ):
+            raise NativeCoreError("Invalid Rust split policy percentages")
+        effective_seed = (int(seed) ^ 42) & ((1 << 64) - 1)
+        if self._seeded_context_split_available:
+            split = int(
+                self.library.kr_rust_split_for_key_seeded(
+                    context_key,
+                    effective_seed,
+                    validation_percent,
+                    test_percent,
+                )
+            )
+        elif effective_seed:
+            bucket = int(self.library.kr_rust_mix_u64(context_key ^ effective_seed)) % 100
+            split = 1 if bucket < validation_percent else 2 if bucket < validation_percent + test_percent else 0
+        else:
+            split = int(self.library.kr_rust_split_for_key(context_key, validation_percent, test_percent))
         if split > 2:
             raise NativeCoreError("Invalid Rust split policy percentages")
         return split

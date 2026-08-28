@@ -59,6 +59,12 @@ _ENV_KEYS = {
     "degradation_patience": "KERNELYRA_DEGRADATION_PATIENCE",
     "early_stopping_patience": "KERNELYRA_EARLY_STOPPING_PATIENCE",
     "target_patience": "KERNELYRA_TARGET_PATIENCE",
+    "validation_percent": "KERNELYRA_VALIDATION_PERCENT",
+    "test_percent": "KERNELYRA_TEST_PERCENT",
+    "group_column": "KERNELYRA_GROUP_COLUMN",
+    "chunk_target_records": "KERNELYRA_CHUNK_TARGET_RECORDS",
+    "chunk_minimum_records": "KERNELYRA_CHUNK_MINIMUM_RECORDS",
+    "chunk_maximum_records": "KERNELYRA_CHUNK_MAXIMUM_RECORDS",
     "checkpoint_resume": "KERNELYRA_CHECKPOINT_RESUME",
     "checkpoint_final": "KERNELYRA_CHECKPOINT_FINAL",
     "checkpoint_rollback": "KERNELYRA_CHECKPOINT_ROLLBACK",
@@ -94,6 +100,12 @@ _DEFAULTS: dict[str, Any] = {
     "degradation_patience": 3,
     "early_stopping_patience": 18,
     "target_patience": 3,
+    "validation_percent": 15,
+    "test_percent": 15,
+    "group_column": None,
+    "chunk_target_records": None,
+    "chunk_minimum_records": None,
+    "chunk_maximum_records": None,
     "checkpoint_resume": "last",
     "checkpoint_final": "best",
     "checkpoint_rollback": "best",
@@ -102,6 +114,7 @@ _DEFAULTS: dict[str, Any] = {
 _INTEGER_FIELDS = {
     "batch_size", "max_steps", "cpu", "ram", "gpu", "threads", "seed", "data_workers", "prefetch",
     "evaluation_interval", "degradation_patience", "early_stopping_patience", "target_patience",
+    "validation_percent", "test_percent", "chunk_target_records", "chunk_minimum_records", "chunk_maximum_records",
 }
 _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvement", "degradation_margin"}
 
@@ -128,6 +141,8 @@ def _coerce(name: str, value: Any) -> Any:
         if any(item < 1 or item > 65_536 for item in result):
             raise ConfigurationError("hidden_layers values must be between 1 and 65536")
         return result
+    if name == "group_column":
+        return str(value).strip()
     if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision", "data_mode", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback"}:
         return str(value).strip().lower()
     return str(value)
@@ -178,6 +193,9 @@ class TrainingPlan:
     degradation_patience: int
     early_stopping_patience: int
     target_patience: int
+    validation_percent: int
+    test_percent: int
+    group_column: str | None
     checkpoint_policy: dict[str, str]
     records_estimate: int
     features_estimate: int
@@ -442,6 +460,16 @@ class AutoTrainer:
             raise ConfigurationError("early_stopping_patience must be between 1 and 10000")
         if not 1 <= target_patience <= 100:
             raise ConfigurationError("target_patience must be between 1 and 100")
+        validation_percent = int(resolved.values["validation_percent"])
+        test_percent = int(resolved.values["test_percent"])
+        if not 0 <= validation_percent <= 95 or not 0 <= test_percent <= 95:
+            raise ConfigurationError("validation_percent and test_percent must be between 0 and 95")
+        if validation_percent + test_percent > 95:
+            raise ConfigurationError("validation_percent + test_percent must leave at least 5% for training")
+        group_column = resolved.values["group_column"]
+        chunk_target_records = resolved.values["chunk_target_records"]
+        chunk_minimum_records = resolved.values["chunk_minimum_records"]
+        chunk_maximum_records = resolved.values["chunk_maximum_records"]
         try:
             checkpoint_policy = resolve_checkpoint_policy(
                 {
@@ -478,14 +506,31 @@ class AutoTrainer:
             warnings.append(
                 f"Dataset will use the external streaming path ({origin}); the source file must remain available"
             )
-        data_health = analyze_inspection(
-            inspection,
-            target=str(target) if target is not None else None,
-            records_estimate=records,
-            feature_count=features,
-            seed=int(resolved.values["seed"]),
-            chunk_target_records=int(policy["chunk_target_records"]),
-        )
+        try:
+            data_health = analyze_inspection(
+                inspection,
+                target=str(target) if target is not None else None,
+                records_estimate=records,
+                feature_count=features,
+                seed=int(resolved.values["seed"]),
+                chunk_target_records=(
+                    int(policy["chunk_target_records"])
+                    if chunk_target_records is None
+                    else int(chunk_target_records)
+                ),
+                chunk_minimum_records=(
+                    None if chunk_minimum_records is None else int(chunk_minimum_records)
+                ),
+                chunk_maximum_records=(
+                    None if chunk_maximum_records is None else int(chunk_maximum_records)
+                ),
+                validation_percent=validation_percent,
+                test_percent=test_percent,
+                group_column=group_column,
+                streaming=data_mode == "stream",
+            )
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from None
         data_contract = dict(data_health["contract"])
         split_policy = dict(data_contract["split_policy"])
         chunk_policy = dict(data_contract["chunk_policy"])
@@ -536,6 +581,9 @@ class AutoTrainer:
             degradation_patience=degradation_patience,
             early_stopping_patience=early_stopping_patience,
             target_patience=target_patience,
+            validation_percent=validation_percent,
+            test_percent=test_percent,
+            group_column=group_column,
             checkpoint_policy=checkpoint_policy,
             records_estimate=records,
             features_estimate=features,
@@ -560,7 +608,14 @@ class AutoTrainer:
     ) -> TrainingResult:
         plan = self.plan(dataset, **overrides)
         if plan.data_mode == "stream":
-            imported = self.workspace.datasets.attach_path(plan.dataset, plan.target)
+            imported = self.workspace.datasets.attach_path(
+                plan.dataset,
+                plan.target,
+                split_seed=plan.seed,
+                validation_percent=plan.validation_percent,
+                test_percent=plan.test_percent,
+                group_column=plan.group_column,
+            )
         else:
             imported = self.workspace.datasets.import_file(plan.dataset, plan.target)
         task = plan.task if plan.task in imported.task_types else imported.task_types[0]
@@ -574,9 +629,6 @@ class AutoTrainer:
                 algorithm_pack=plan.algorithm_pack,
             ),
         )
-        imported_contract = imported.manifest.get("data_contract")
-        if not isinstance(imported_contract, dict):
-            imported_contract = plan.data_contract
         plan = replace(
             plan,
             target=imported.target,
@@ -584,9 +636,6 @@ class AutoTrainer:
             backend=backend,
             records_estimate=imported.records,
             features_estimate=imported.features,
-            data_contract=imported_contract,
-            split_policy=dict(imported_contract.get("split_policy") or plan.split_policy),
-            chunk_policy=dict(imported_contract.get("chunk_policy") or plan.chunk_policy),
         )
         run = self.workspace.create_run(
             RunConfig(

@@ -416,6 +416,8 @@ class TrainingRuntime:
             profile=run.profile,
             seed=run.seed,
             task_type=run.objective,
+            validation_fraction=float(run.split_policy.get("validation_percent", 15)) / 100.0,
+            test_fraction=float(run.split_policy.get("test_percent", 15)) / 100.0,
             resource_limits={
                 "memory_bytes": max(256 * 1024**2, int(total_memory * run.ram / 100)),
                 "cpu_percent": run.cpu,

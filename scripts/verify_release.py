@@ -10,6 +10,7 @@ import sys
 import tarfile
 import threading
 import time
+import tomllib
 import uuid
 import zipfile
 from pathlib import Path
@@ -194,6 +195,8 @@ def forbidden_archive_entry(artifact: Path, name: str) -> bool:
 
 
 def main() -> int:
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        expected_version = str(tomllib.load(handle)["project"]["version"])
     dist = ROOT / "dist"
     wheels = sorted(dist.glob("*.whl"))
     sdists = sorted(dist.glob("*.tar.gz"))
@@ -201,11 +204,19 @@ def main() -> int:
     if len(wheels) != 1 or len(sdists) != 1 or len(source_zips) != 1:
         raise SystemExit("Expected exactly one wheel, one sdist and one source ZIP in dist/")
     for artifact in [*wheels, *sdists, *source_zips]:
-        forbidden = [
-            name for name in archive_names(artifact) if forbidden_archive_entry(artifact, name)
-        ]
+        names = archive_names(artifact)
+        forbidden = [name for name in names if forbidden_archive_entry(artifact, name)]
         if forbidden:
             raise SystemExit(f"Forbidden files in {artifact.name}:\n" + "\n".join(forbidden))
+        internal_docs = [
+            name
+            for name in names
+            if "/docs/internal/" in ("/" + name.replace("\\", "/").lstrip("/"))
+        ]
+        if internal_docs:
+            raise SystemExit(
+                f"Internal reference leaked into {artifact.name}:\n" + "\n".join(internal_docs)
+            )
     sdist_names = archive_names(sdists[0])
     distributable_sources = (
         "benchmarks/cpu/README.md",
@@ -250,7 +261,13 @@ def main() -> int:
     daemon_process: subprocess.Popen[bytes] | None = None
     kernelyra: Path | None = None
     smoke_env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    smoke_env.update({"PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"})
+    smoke_env.update(
+        {
+            "PYTHONUTF8": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "KERNELYRA_EXPECTED_VERSION": expected_version,
+        }
+    )
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
     try:
@@ -280,7 +297,7 @@ payload = {
     'new_files': sorted(set(os.listdir('.')) - before_files),
 }
 print(json.dumps(payload, sort_keys=True))
-assert payload['version'] == '0.6.0a1'
+assert payload['version'] == os.environ['KERNELYRA_EXPECTED_VERSION']
 assert payload['tensorflow_loaded'] is False
 assert payload['new_threads'] == []
 assert payload['new_files'] == []
@@ -305,10 +322,10 @@ assert payload['new_files'] == []
                 env=smoke_env,
             )
 
-        if cli("version").stdout.strip() != "0.6.0a1":
+        if cli("version").stdout.strip() != expected_version:
             raise SystemExit("Installed-wheel CLI reported an unexpected version")
         doctor = json.loads(cli("--json", "doctor").stdout)
-        if not doctor.get("ok") or doctor.get("version") != "0.6.0a1":
+        if not doctor.get("ok") or doctor.get("version") != expected_version:
             raise SystemExit(f"Installed-wheel doctor failed: {doctor}")
         capabilities = json.loads(cli("--json", "capabilities").stdout)
         if not any(item.get("name") == "numpy" and item.get("available") for item in capabilities["backends"]):
@@ -349,7 +366,7 @@ assert payload['new_files'] == []
         if set(public_health) != {"ok", "version", "protocol"}:
             raise SystemExit(f"Public health leaked private fields: {public_health}")
         health = json.loads(cli("daemon", "status").stdout)
-        if health.get("version") != "0.6.0a1" or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
+        if health.get("version") != expected_version or Path(health["workspace"]).resolve() != daemon_workspace.resolve():
             raise SystemExit(f"Unexpected installed-wheel daemon health: {health}")
 
         _expect_get_status(url, "/", 404)

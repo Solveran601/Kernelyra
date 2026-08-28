@@ -71,6 +71,12 @@ function Get-KernelyraPlan {
         [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
         [ValidateSet("last", "best")] [string]$CheckpointResume = "last",
         [ValidateSet("best", "last")] [string]$CheckpointFinal = "best",
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
+        [string]$GroupColumn,
+        [ValidateRange(128,262144)] [int]$ChunkTargetRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMinimumRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMaximumRecords,
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
@@ -78,8 +84,12 @@ function Get-KernelyraPlan {
         [string]$Workspace = "."
     )
 
-    $arguments = @("plan", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
+    $arguments = @("plan", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
     if ($Target) { $arguments += @("--target", $Target) }
+    if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
+    if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
 
@@ -95,6 +105,12 @@ function Start-KernelyraTraining {
         [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
         [ValidateSet("last", "best")] [string]$CheckpointResume = "last",
         [ValidateSet("best", "last")] [string]$CheckpointFinal = "best",
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
+        [string]$GroupColumn,
+        [ValidateRange(128,262144)] [int]$ChunkTargetRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMinimumRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMaximumRecords,
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
@@ -104,8 +120,12 @@ function Start-KernelyraTraining {
         [string]$Workspace = "."
     )
 
-    $arguments = @("train", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
+    $arguments = @("train", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
     if ($Target) { $arguments += @("--target", $Target) }
+    if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
+    if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
     if ($PSCmdlet.ShouldProcess($Dataset, "Train Kernelyra model")) {
         Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
     }
@@ -269,9 +289,11 @@ function Get-KernelyraChunkPlan {
     param(
         [Parameter(Mandatory, Position = 0)] [int]$Records,
         [int]$TargetRecords = 4096,
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
         [string]$Workspace = "."
     )
-    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("chunk-plan", $Records, "--target-records", $TargetRecords)
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("chunk-plan", $Records, "--target-records", $TargetRecords, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent)
 }
 
 function Invoke-Kernelyra {

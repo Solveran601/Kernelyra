@@ -15,7 +15,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.6.0a1"
+VERSION = "0.6.0a2"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4
@@ -74,6 +74,8 @@ def _parser() -> argparse.ArgumentParser:
     chunk_plan.add_argument("--minimum-records", type=int)
     chunk_plan.add_argument("--maximum-records", type=int)
     chunk_plan.add_argument("--seed", type=int, default=42)
+    chunk_plan.add_argument("--validation-percent", type=int, default=15)
+    chunk_plan.add_argument("--test-percent", type=int, default=15)
 
     def add_training_options(item: argparse.ArgumentParser) -> None:
         item.add_argument("dataset", help="Dataset file or folder path")
@@ -106,6 +108,12 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--data-workers", type=int)
         item.add_argument("--prefetch", type=int)
         item.add_argument("--seed", type=int)
+        item.add_argument("--validation-percent", type=int, help="Held-out validation share, 0-95")
+        item.add_argument("--test-percent", type=int, help="Held-out test share, 0-95")
+        item.add_argument("--group-column", help="Optional context key; one key never crosses a split")
+        item.add_argument("--chunk-target-records", type=int, help="Target size for variable contiguous data chunks")
+        item.add_argument("--chunk-minimum-records", type=int, help="Minimum size for variable data chunks")
+        item.add_argument("--chunk-maximum-records", type=int, help="Maximum size for variable data chunks")
         item.add_argument("--evaluation-interval", type=int, help="Steps between validation checks")
         item.add_argument("--min-improvement", type=float, help="Minimum score gain that counts as progress")
         item.add_argument("--degradation-margin", type=float, help="Allowed score drop from the best checkpoint")
@@ -503,6 +511,8 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             minimum_records=args.minimum_records,
             maximum_records=args.maximum_records,
             seed=args.seed,
+            validation_percent=args.validation_percent,
+            test_percent=args.test_percent,
         )
         return True, planner.summary(args.records)
     if args.command == "dataset" and args.dataset_command == "doctor":
@@ -541,7 +551,9 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             "learning_rate", "weight_decay", "hidden_layers", "precision", "data_mode", "cpu", "ram", "gpu", "threads",
             "data_workers", "prefetch", "seed", "evaluation_interval", "min_improvement",
             "degradation_margin", "degradation_patience", "early_stopping_patience",
-            "target_patience", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback", "accept_batch_risk", "name",
+            "target_patience", "validation_percent", "test_percent", "group_column",
+            "chunk_target_records", "chunk_minimum_records", "chunk_maximum_records",
+            "checkpoint_resume", "checkpoint_final", "checkpoint_rollback", "accept_batch_risk", "name",
         )
         options = {name: getattr(args, name, None) for name in names if getattr(args, name, None) is not None}
         with AutoTrainer(root, config=args.config) as trainer:

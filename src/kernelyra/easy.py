@@ -187,6 +187,39 @@ class TrainingConfig:
         """
         return self.set(data_mode=mode, data_workers=workers, prefetch=prefetch)
 
+    def split(
+        self,
+        *,
+        validation_percent: int | None = None,
+        test_percent: int | None = None,
+        group_column: str | None = None,
+    ) -> Self:
+        """Control held-out proportions and optionally declare a context key.
+
+        A declared ``group_column`` is excluded from learned features and is
+        kept entirely in one split on the external streaming path.  Leaving a
+        value omitted keeps the corresponding automatic setting.
+        """
+        return self.set(
+            validation_percent=validation_percent,
+            test_percent=test_percent,
+            group_column=group_column,
+        )
+
+    def chunks(
+        self,
+        *,
+        target_records: int | None = None,
+        minimum_records: int | None = None,
+        maximum_records: int | None = None,
+    ) -> Self:
+        """Tune non-uniform contiguous planning ranges without breaking order."""
+        return self.set(
+            chunk_target_records=target_records,
+            chunk_minimum_records=minimum_records,
+            chunk_maximum_records=maximum_records,
+        )
+
     def stopping(
         self,
         *,

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.6.0a2 — 2026-08-28
+
+- Added end-to-end configurable held-out split controls: validation/test
+  percentages, a group/context column, and a deterministic split seed now
+  flow through the Python API, CLI, PowerShell, TOML, dataset manifest, and
+  materialized backend configuration. Streaming refuses a plan that cannot
+  supply the minimum bounded validation and test views before a run starts.
+- Added configurable variable chunk bounds (`target`, `minimum`, `maximum`)
+  to Data Doctor and training planning, with validation that keeps the
+  requested range internally consistent.
+- Replaced duplicate public instructions with one maintained internal Russian
+  reference. It covers public Python, CLI, PowerShell, configuration,
+  data-health, packs, native roles, SDK protocol, and text preparation, while
+  release archives explicitly exclude it.
+- Added a binary-compatible seeded context-split ABI across Rust, C, C++ and
+  Python. A non-default seed now changes group assignment reproducibly without
+  invalidating the historical default mapping or old native DLLs.
 - Added an active C core under `native/core/c`: overflow-safe matrix and
   random-minibatch contracts are checked before any native buffer resize or
   pointer arithmetic.

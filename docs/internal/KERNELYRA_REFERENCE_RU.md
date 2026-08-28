@@ -1,12 +1,11 @@
-KERNELYRA — ЕДИНЫЙ СПРАВОЧНИК ПОЛЬЗОВАТЕЛЯ И ИНТЕГРАТОРА
-===========================================================
+# Kernelyra — внутренний полный справочник пользователя и интегратора
 
-Статус: 0.6.0a1 (alpha) — локально проверенный исходный выпуск. Публикация на
-GitHub/PyPI наступает только после отдельной отправки тегов и артефактов.
-Этот файл — единственный полный справочник; README остаются краткими.
+Статус: **0.6.0a2 (alpha)**. Это расширенная внутренняя справка для работы с
+исходным checkout: она намеренно **не включается** в wheel, sdist, source ZIP
+или GitHub Release assets. Публичные README остаются краткими и не ссылаются
+на этот файл, поэтому архив релиза остаётся самодостаточным.
 
-1. НАЗНАЧЕНИЕ И ЧЕСТНЫЕ ГРАНИЦЫ
---------------------------------
+## 1. Назначение и честные границы
 
 Kernelyra — локальная terminal-first библиотека для tabular training.
 
@@ -77,12 +76,20 @@ PowerShell:
 Doctor описывает только ограниченный preview. Для CSV/TSV/JSONL/NDJSON он и
 планировщик используют одну оценку количества строк с чтением не более 8 MiB.
 
-Правило split:
-  - time/date-like колонка: temporal, исходный порядок не меняется;
-  - group/user/account/customer/session/conversation/document/device:
-    context split, один контекст всегда остаётся в одном split;
-  - classification: deterministic stratified split;
-  - остальные случаи: deterministic random split.
+Правило split зависит от выбранного пути данных:
+  - явный group_column на streaming path: context split; все строки одной
+    группы остаются в одном split, а group-колонка исключается из признаков;
+  - автоматически найденная group/user/account/customer/session/conversation/
+    document/device колонка на streaming path получает ту же защиту;
+  - streaming без context: stable_record_hash, то есть целая строка
+    детерминированно назначается train/validation/test;
+  - materialized classification: deterministic stratified split;
+  - materialized time-like input: temporal, исходный порядок не меняется;
+  - остальные materialized случаи: deterministic random split.
+
+В streaming должен получиться минимум 8 строк и в validation, и в test. Если
+малое число групп или доли split этого не дают, библиотека прерывает preflight
+с объяснением до старта worker, а не создаёт неполноценное обучение.
 
 Пак алгоритмов меняет потоки, bulk-вызовы, prefetch, чанки и размер арены. Он
 не классифицирует компьютер пользователя и не отменяет явные лимиты.
@@ -172,6 +179,28 @@ mode:
 Принудительный stream отклоняется, если у формата нет streaming reader.
 workers: 0..64; prefetch: 0..32.
 
+Split, контекст и неравномерные чанки:
+
+  config.split(
+      validation_percent=20,
+      test_percent=10,
+      group_column="customer_id",
+  )
+  config.chunks(
+      target_records=4096,
+      minimum_records=2048,
+      maximum_records=6144,
+  )
+
+validation_percent и test_percent допустимы от 0 до 95; вместе они не могут
+превысить 95, потому что минимум 5% остаётся train. `seed(42)` сохраняет
+историческое context-назначение; другое значение seed воспроизводимо меняет
+назначение групп. `chunks()` создаёт непрерывные неравные диапазоны и требует
+`minimum ≤ target ≤ maximum`; финальный чанк может быть меньше minimum, чтобы
+точно завершить датасет. В summary поля `configured_minimum_records` и
+`configured_maximum_records` показывают введённые границы, а
+`minimum_records`/`maximum_records` — фактически получившиеся размеры.
+
 Обучение и контроль качества:
 
   config.goal(0.92)
@@ -255,7 +284,8 @@ learning_rate, weight_decay, hidden_layers, precision, data_mode, cpu, ram,
 gpu, threads, data_workers, prefetch, seed, evaluation_interval,
 min_improvement, degradation_margin, degradation_patience,
 early_stopping_patience, target_patience, checkpoint_resume, checkpoint_final,
-checkpoint_rollback, name.
+checkpoint_rollback, validation_percent, test_percent, group_column,
+chunk_target_records, chunk_minimum_records, chunk_maximum_records, name.
 
 task: auto | binary_classification | multiclass_classification | regression.
 backend: auto | native | numpy | torch | tensorflow.
@@ -281,7 +311,10 @@ precision: auto | float64 | float32 | float16 | bfloat16.
   KERNELYRA_EARLY_STOPPING_PATIENCE KERNELYRA_TARGET_PATIENCE
   KERNELYRA_CHECKPOINT_RESUME   KERNELYRA_CHECKPOINT_FINAL
   KERNELYRA_CHECKPOINT_ROLLBACK
-  KERNELYRA_TARGET_PATIENCE
+  KERNELYRA_VALIDATION_PERCENT  KERNELYRA_TEST_PERCENT
+  KERNELYRA_GROUP_COLUMN
+  KERNELYRA_CHUNK_TARGET_RECORDS KERNELYRA_CHUNK_MINIMUM_RECORDS
+  KERNELYRA_CHUNK_MAXIMUM_RECORDS
 
 Пример kernelyra.toml:
 
@@ -296,6 +329,12 @@ precision: auto | float64 | float32 | float16 | bfloat16.
   max_steps = 2000
   evaluation_interval = 25
   early_stopping_patience = 30
+  validation_percent = 20
+  test_percent = 10
+  group_column = "customer_id"
+  chunk_target_records = 4096
+  chunk_minimum_records = 2048
+  chunk_maximum_records = 6144
 
 
 8. CLI: ПОЛНАЯ КАРТА
@@ -315,9 +354,9 @@ precision: auto | float64 | float32 | float16 | bfloat16.
   kernelyra advise PATH
   kernelyra execution
   kernelyra tune --execution cpu --pack throughput --records 100000 --features 64 --batch-size 128
-  kernelyra chunk-plan 100000 --target-records 4096 --seed 42
+  kernelyra chunk-plan 100000 --target-records 4096 --minimum-records 2048 --maximum-records 6144 --seed 42 --validation-percent 20 --test-percent 10
   kernelyra plan DATASET --target label --backend native --execution cpu --data-mode memory
-  kernelyra train DATASET --target label --backend native --execution cpu --data-mode stream
+  kernelyra train DATASET --target label --backend native --execution cpu --data-mode stream --validation-percent 20 --test-percent 10 --group-column customer_id --chunk-target-records 4096 --chunk-minimum-records 2048 --chunk-maximum-records 6144
   kernelyra finetune MODEL DATASET --target label --backend torch
 
 Data Doctor и датасеты:
@@ -409,6 +448,12 @@ Fused preprocessing доступен через NativeCore.preprocess_f32(...): 
 операцию за один проход. При других комбинациях флагов остаётся проверяемый
 fallback. Эта деталь не расширяет список поддерживаемых форматов или моделей.
 
+В 0.6.0a2 Rust policy получил ABI-совместимый seeded context split:
+`kr_rust_split_for_key_seeded(group_key, seed, validation_percent, test_percent)`.
+Через C доступен `kr_c_context_split_seeded(...)`, а Python вызывает его через
+`NativeCore.split_for_context(..., seed=...)`. Старый ABI не удалён: старые DLL
+работают с совместимым fallback, а новый DLL использует Rust непосредственно.
+
 
 9. POWERSHELL
 -------------
@@ -424,7 +469,7 @@ fallback. Эта деталь не расширяет список поддер�
   Test-KernelyraDataset .\data\train.csv -Target label
   Get-KernelyraDataContract .\data\train.csv -Target label
   Get-KernelyraPlan .\data\train.csv -Target label -Execution cpu -Pack throughput -DataMode memory -Cpu 85 -Ram 65 -Threads 8
-  Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack throughput -DataMode stream -MaxSteps 2000
+  Start-KernelyraTraining .\data\train.csv -Target label -Execution cpu -Pack throughput -DataMode stream -MaxSteps 2000 -ValidationPercent 20 -TestPercent 10 -GroupColumn customer_id -ChunkTargetRecords 4096 -ChunkMinimumRecords 2048 -ChunkMaximumRecords 6144
   Watch-KernelyraRun RUN_ID
   Resume-KernelyraRun RUN_ID
   Get-KernelyraRunStatus RUN_ID
@@ -433,7 +478,7 @@ fallback. Эта деталь не расширяет список поддер�
   Get-KernelyraExecution
   Get-KernelyraNativeStatus
   Get-KernelyraCpuTuning -Records 100000 -Features 64 -BatchSize 128
-  Get-KernelyraChunkPlan -Records 100000 -TargetRecords 4096
+  Get-KernelyraChunkPlan -Records 100000 -TargetRecords 4096 -MinimumRecords 2048 -MaximumRecords 6144 -ValidationPercent 20 -TestPercent 10
 
 Паки PowerShell:
 
@@ -473,19 +518,24 @@ plan/train/finetune совпадают с разделом 7.
 11. ДРУГИЕ ПУБЛИЧНЫЕ PYTHON-ИНСТРУМЕНТЫ
 ----------------------------------------
 
-  analyze_inspection(...), inspect_path(...), recommend_chunk_policy(...)
-  ContextChunkPlanner(...), ContextChunk(...), autotune_execution(...)
-  list_algorithm_packs(), get_algorithm_pack(), algorithm_pack_table()
-  algorithm_pack_path(), create_algorithm_pack(), add_pack_algorithm()
-  remove_pack_algorithm(), delete_algorithm_pack()
-  build_experiment_report(), write_experiment_report(), run_inference_check()
-  extract_text(), extract_folder(), text_format_count()
-  ByteTokenizer(), plan_text_for_training(), prepare_masked_text_examples()
-  batch_masked_text_examples(), iter_masked_text_batches()
-  Workspace, Kernelyra, RunHandle, DaemonClient, AsyncKernelyraClient
-  NativeTensorArena, QualityGate
-
-Текстовые функции готовят и планируют text bytes; они не являются LLM trainer.
+| API | Назначение |
+|---|---|
+| `analyze_inspection`, `inspect_path`, `recommend_chunk_policy` | bounded Data Doctor, signed contract и preview чанков |
+| `ContextChunkPlanner`, `ContextChunk` | детерминированные context split, `split_for`, `split_indices`, `partition`, `chunk_ranges`, `summary` |
+| `autotune_execution` | только расчёт tuning; обучение и скрытый benchmark не запускаются |
+| `list_algorithm_packs`, `get_algorithm_pack`, `algorithm_pack_table`, `algorithm_pack_path` | чтение built-in/custom pack и пути JSON custom packs |
+| `create_algorithm_pack`, `add_pack_algorithm`, `remove_pack_algorithm`, `delete_algorithm_pack` | валидируемое создание и изменение только custom pack |
+| `build_experiment_report`, `write_experiment_report` | собрать/записать JSON или HTML отчёт completed run |
+| `run_inference_check` | held-out inference; хеш checkpoint до/после доказывает отсутствие мутации |
+| `extract_text`, `extract_folder`, `text_format_count` | доступное извлечение и статистика текстовых форматов |
+| `ByteTokenizer`, `plan_text_for_training`, `prepare_masked_text_examples`, `batch_masked_text_examples`, `iter_masked_text_batches` | UTF-8 byte preparation и causal masks; это не LLM trainer |
+| `Workspace`, `Kernelyra`, `RunHandle` | низкоуровневый локальный workspace и управление run |
+| `DaemonClient`, `AsyncKernelyraClient`, `KernelyraClient` | sync/async JSONL clients; последний — alias sync-клиента |
+| `NativeTensorArena` | opt-in bounded aligned float32 buffers; обычный `Engine` сам его не требует |
+| `QualityGate` | finite metrics и gap к best/baseline до замены безопасного checkpoint |
+| `Config`, `Settings`, `Dataset`, `Run` | aliases `TrainingConfig`, `DatasetInfo`, `RunInfo` |
+| `BackendInfo`, `DatasetManifest`, `DatasetSchema`, `IngestorInfo`, `RunConfig`, `RunMetrics`, `RunStatus`, `TaskType` | immutable metadata-типы публичного API |
+| `KernelyraError` и наследники | единая и конкретная обработка configuration/dataset/run/worker/access ошибок |
 
 
 12. БЕЗОПАСНЫЕ РЕЦЕПТЫ

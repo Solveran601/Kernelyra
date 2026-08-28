@@ -115,9 +115,16 @@ class ContextChunkPlanner:
         key = self._context_u64(context)
         core = self._native_core()
         if core is not None:
-            split_id = core.split_for_context(key, self.validation_percent, self.test_percent)
+            split_id = core.split_for_context(
+                key,
+                self.validation_percent,
+                self.test_percent,
+                seed=self.seed,
+            )
         else:
-            bucket = self._mix_u64(key) % 100
+            # Preserve the historical mapping for the default seed while
+            # making an explicit seed control each context's assignment.
+            bucket = self._mix_u64(key ^ (self.seed ^ 42)) % 100
             split_id = 1 if bucket < self.validation_percent else 2 if bucket < self.validation_percent + self.test_percent else 0
         return _SPLITS[split_id]
 
@@ -180,6 +187,12 @@ class ContextChunkPlanner:
             "records": int(total_records),
             "chunk_count": len(ranges),
             "target_records": self.target_records,
+            "configured_minimum_records": self.minimum_records,
+            "configured_maximum_records": self.maximum_records,
+            "seed": self.seed,
+            "validation_percent": self.validation_percent,
+            "test_percent": self.test_percent,
+            "train_percent": 100 - self.validation_percent - self.test_percent,
             "minimum_records": min(sizes, default=0),
             "maximum_records": max(sizes, default=0),
             "native_policy_active": self.native_policy_active,

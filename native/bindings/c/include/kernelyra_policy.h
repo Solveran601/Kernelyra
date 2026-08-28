@@ -84,6 +84,8 @@ int kr_c_chunk_cursor_init_from_plan(
     const kr_c_execution_plan* plan,
     uint64_t seed);
 int kr_c_context_split(uint64_t context_key, uint32_t validation_percent, uint32_t test_percent);
+int kr_c_context_split_seeded(
+    uint64_t context_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent);
 int kr_c_execution_plan_make(
     const kr_c_execution_request* request,
     kr_c_execution_plan* plan);

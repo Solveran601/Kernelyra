@@ -6,6 +6,8 @@
 *.sqlite3-shm
 *.npz
 *.log
+RELEASE_MANIFEST.json
+SHA256SUMS.txt
 
 # Python
 __pycache__/

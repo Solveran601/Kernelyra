@@ -39,6 +39,18 @@ pub extern "C" fn kr_rust_split_for_key(
     split::for_context(group_key, validation_percent, test_percent)
 }
 
+/// Seeded variant kept separate from the original ABI entry point so existing
+/// clients remain binary-compatible.
+#[unsafe(export_name = "kr_rust_policy_split_for_key_seeded")]
+pub extern "C" fn kr_rust_split_for_key_seeded(
+    group_key: u64,
+    seed: u64,
+    validation_percent: u32,
+    test_percent: u32,
+) -> u32 {
+    split::for_context_seeded(group_key, seed, validation_percent, test_percent)
+}
+
 /// Return a bounded variable chunk size for context-safe stream scheduling.
 #[unsafe(export_name = "kr_rust_policy_next_chunk_size")]
 pub extern "C" fn kr_rust_next_chunk_size(
@@ -157,6 +169,22 @@ mod tests {
         assert_eq!(kr_rust_split_for_key(42, 15, 15), kr_rust_split_for_key(42, 15, 15));
         assert_eq!(kr_rust_split_for_key(42, 80, 16), split::INVALID);
         assert!((0..10_000).any(|key| kr_rust_split_for_key(key, 15, 15) == split::TRAIN));
+    }
+
+    #[test]
+    fn seeded_split_is_reproducible_and_changes_the_assignment_space() {
+        assert_eq!(
+            kr_rust_split_for_key_seeded(42, 19, 15, 15),
+            kr_rust_split_for_key_seeded(42, 19, 15, 15)
+        );
+        assert_eq!(
+            kr_rust_split_for_key_seeded(42, 0, 15, 15),
+            kr_rust_split_for_key(42, 15, 15)
+        );
+        assert!((0..10_000).any(|key| {
+            kr_rust_split_for_key_seeded(key, 19, 15, 15)
+                != kr_rust_split_for_key_seeded(key, 0, 15, 15)
+        }));
     }
 
     #[test]

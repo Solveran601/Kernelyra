@@ -19,3 +19,15 @@ pub fn for_context(key: u64, validation_percent: u32, test_percent: u32) -> u32 
         TRAIN
     }
 }
+
+/// Match the base policy while allowing callers to select an independent,
+/// reproducible assignment.  The seed is mixed into the key rather than held
+/// as mutable state, so every process produces the same split for a context.
+pub fn for_context_seeded(
+    key: u64,
+    seed: u64,
+    validation_percent: u32,
+    test_percent: u32,
+) -> u32 {
+    for_context(key ^ seed, validation_percent, test_percent)
+}

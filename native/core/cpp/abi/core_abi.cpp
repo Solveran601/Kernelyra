@@ -107,6 +107,8 @@ void kr_fortran_multiclass_train_f32(
 uint64_t kr_rust_policy_mix_u64(uint64_t value);
 uint32_t kr_rust_policy_split_for_key(
     uint64_t group_key, uint32_t validation_percent, uint32_t test_percent);
+uint32_t kr_rust_policy_split_for_key_seeded(
+    uint64_t group_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent);
 size_t kr_rust_policy_next_chunk_size(
     size_t remaining_records, size_t target_records, size_t minimum_records,
     size_t maximum_records, uint64_t sequence, uint64_t seed);
@@ -1387,6 +1389,21 @@ uint32_t kr_rust_split_for_key(
   }
 #endif
   return kernelyra::policy::split_for_context(group_key, validation_percent, test_percent);
+}
+
+uint32_t kr_rust_split_for_key_seeded(
+    uint64_t group_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent) {
+  if (validation_percent > 95U || test_percent > 95U || validation_percent + test_percent > 95U) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+#if KR_HAS_RUST_POLICY
+  if (component_enabled(KR_COMPONENT_RUST_POLICY)) {
+    return kr_rust_policy_split_for_key_seeded(
+        group_key, seed, validation_percent, test_percent);
+  }
+#endif
+  return kernelyra::policy::split_for_context(
+      group_key ^ seed, validation_percent, test_percent);
 }
 
 size_t kr_rust_next_chunk_size(

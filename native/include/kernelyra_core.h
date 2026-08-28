@@ -132,6 +132,9 @@ KR_API int kr_values_softmax_f32(float* values, size_t count);
 KR_API uint64_t kr_rust_mix_u64(uint64_t value);
 KR_API uint32_t kr_rust_split_for_key(
     uint64_t group_key, uint32_t validation_percent, uint32_t test_percent);
+/* ABI-compatible extension: seed changes a context assignment reproducibly. */
+KR_API uint32_t kr_rust_split_for_key_seeded(
+    uint64_t group_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent);
 KR_API size_t kr_rust_next_chunk_size(
     size_t remaining_records,
     size_t target_records,
