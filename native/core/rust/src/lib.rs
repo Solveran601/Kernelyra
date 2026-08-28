@@ -8,6 +8,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod adaptive;
+mod batch_plan;
 mod chunks;
 mod hash;
 mod signature;
@@ -95,6 +96,33 @@ pub unsafe extern "C" fn kr_rust_sample_indices(
     let destination = unsafe { core::slice::from_raw_parts_mut(output, requested) };
     sampler::fill_indices(rows, rng_state, destination);
     requested
+}
+
+/// Validate native minibatch dimensions without allocating. The bridge uses
+/// this before resizing persistent C++ buffers, so a malformed request cannot
+/// reach pointer arithmetic in the gathering kernels.
+///
+/// # Safety
+/// `output_values` must point to writable `usize` storage.
+#[unsafe(export_name = "kr_rust_policy_plan_batch")]
+pub unsafe extern "C" fn kr_rust_plan_batch(
+    source_rows: usize,
+    features: usize,
+    requested_rows: usize,
+    output_values: *mut usize,
+    output_bytes: *mut usize,
+) -> usize {
+    if output_values.is_null() || output_bytes.is_null() {
+        return 0;
+    }
+    let Some(plan) = batch_plan::plan(source_rows, features, requested_rows) else {
+        return 0;
+    };
+    unsafe {
+        *output_values = plan.values;
+        *output_bytes = plan.values_bytes;
+    }
+    plan.rows
 }
 
 /// Classify an untrusted file prefix without parsing or allocating from it.

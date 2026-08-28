@@ -149,9 +149,11 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
     root = Path(__file__).resolve().parents[2]
     source = root / "native" / "bridge" / "cpp" / "core_abi.cpp"
     policy_source = root / "native" / "bridge" / "cpp" / "context_policy.cpp"
+    c_guard_source = root / "native" / "core" / "c" / "execution_guard.c"
+    c_guard_headers = root / "native" / "core" / "c"
     headers = root / "native" / "include"
-    if not source.is_file() or not policy_source.is_file():
-        raise NativeCoreError("Native C++ ABI bridge source is not present in this installation")
+    if not source.is_file() or not policy_source.is_file() or not c_guard_source.is_file():
+        raise NativeCoreError("Native C/C++ ABI bridge sources are not present in this installation")
     destination = Path(output_dir) if output_dir else Path(__file__).resolve().parent / "native_bin"
     destination.mkdir(parents=True, exist_ok=True)
     system = platform.system().lower()
@@ -301,6 +303,8 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-fopenmp",
                 "-I",
                 str(headers),
+                "-I",
+                str(c_guard_headers),
                 *defines,
                 "-shared",
                 "-static",
@@ -308,6 +312,7 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-static-libstdc++",
                 str(source),
                 str(policy_source),
+                str(c_guard_source),
                 *(str(item) for item in objects),
                 "-o",
                 str(output),
@@ -351,8 +356,11 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             "-fPIC",
             "-I",
             str(headers),
+            "-I",
+            str(c_guard_headers),
             str(source),
             str(policy_source),
+            str(c_guard_source),
             "-o",
             str(output),
         ]

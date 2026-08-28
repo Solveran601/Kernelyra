@@ -50,9 +50,10 @@ contains
       call kr_fortran_accumulate_gradient_tile_f32( &
           x, errors, tile_first, tile_last, features, gradient)
     end do
-    call kr_fortran_guard_scalar_update_f32(gradient, features, bias_gradient, total_loss, status)
-    if (status /= 0_c_int) return
     inverse = 1.0_c_float / real(rows, c_float)
+    call kr_fortran_guard_scalar_update_f32( &
+        weights, gradient, features, bias, bias_gradient, learning_rate, inverse, decay, total_loss, status)
+    if (status /= 0_c_int) return
     call kr_fortran_update_f32(weights, gradient, learning_rate, inverse, decay, features)
     call kr_update_bias(bias, bias_gradient, learning_rate, inverse)
     loss = real(total_loss / real(rows, c_double), c_float)
@@ -98,9 +99,10 @@ contains
       call kr_fortran_accumulate_gradient_tile_f32( &
           x, errors, tile_first, tile_last, features, gradient)
     end do
-    call kr_fortran_guard_scalar_update_f32(gradient, features, bias_gradient, total_loss, status)
-    if (status /= 0_c_int) return
     inverse = 1.0_c_float / real(rows, c_float)
+    call kr_fortran_guard_scalar_update_f32( &
+        weights, gradient, features, bias, bias_gradient, learning_rate, inverse, decay, total_loss, status)
+    if (status /= 0_c_int) return
     call kr_fortran_update_f32(weights, gradient, learning_rate, inverse, decay, features)
     call kr_update_bias(bias, bias_gradient, learning_rate, inverse)
     loss = real(total_loss / real(rows, c_double), c_float)

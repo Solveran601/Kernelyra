@@ -7,6 +7,7 @@ target_compile_features(dataset_probe PRIVATE cxx_std_17)
 set(KERNELYRA_NATIVE_SOURCES
   bridge/cpp/core_abi.cpp
   bridge/cpp/context_policy.cpp
+  core/c/execution_guard.c
   core/fortran/numeric_constants.f90
   core/fortran/numeric_precision.f90
   core/fortran/numeric_moments.f90
@@ -27,7 +28,7 @@ set(KERNELYRA_NATIVE_SOURCES
 )
 add_library(kernelyra_core SHARED ${KERNELYRA_NATIVE_SOURCES})
 target_compile_features(kernelyra_core PRIVATE cxx_std_17)
-target_include_directories(kernelyra_core PRIVATE include)
+target_include_directories(kernelyra_core PRIVATE include core/c)
 target_compile_definitions(kernelyra_core PRIVATE KR_HAS_FORTRAN_NUMERIC=1)
 find_program(KERNELYRA_CARGO_EXECUTABLE cargo REQUIRED)
 set(KERNELYRA_RUST_TARGET x86_64-pc-windows-gnu)
@@ -42,6 +43,7 @@ add_custom_command(
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/lib.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/adaptive.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/batch_plan.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/chunks.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/hash.rs"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
@@ -71,6 +73,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_alignment.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_allocator.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arena.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_batch.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_budget.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arithmetic.zig"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_clip.zig"
@@ -94,7 +97,7 @@ target_link_libraries(kernelyra_c_policy PUBLIC kernelyra_core)
 if(BUILD_TESTING)
   add_executable(kernelyra_native_contract_tests tools/native_contract_tests.cpp)
   target_compile_features(kernelyra_native_contract_tests PRIVATE cxx_std_17)
-  target_include_directories(kernelyra_native_contract_tests PRIVATE include bindings/c/include)
+  target_include_directories(kernelyra_native_contract_tests PRIVATE include bindings/c/include core/c)
   target_link_libraries(kernelyra_native_contract_tests PRIVATE kernelyra_core kernelyra_c_policy)
   add_test(NAME kernelyra_native_contract_tests COMMAND kernelyra_native_contract_tests)
 endif()

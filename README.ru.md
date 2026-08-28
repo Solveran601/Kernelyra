@@ -30,8 +30,9 @@ API, PowerShell-модуле и JSONL-протоколе для поставля
 - Прямое обучение на CSV, TSV, JSONL/NDJSON, числовых NPZ и опциональном
   Parquet.
 - Встроенные native и NumPy backend; PyTorch и TensorFlow/Keras — опционально,
-  когда они установлены. В native-core есть пять наблюдаемых ролей: C ABI,
-  C++ dispatcher, Rust policy, Fortran numeric kernels и Zig memory kernels.
+  когда они установлены. В native-core есть пять наблюдаемых ролей: C ABI с
+  проверкой размеров, C++ dispatcher, Rust policy, Fortran numeric kernels и
+  Zig memory kernels.
   Поле `native_execution` показывает только движки, которые действительно
   участвовали в вызовах конкретной модели; оно не считает все пять «по умолчанию».
 - Явный выбор выполнения `cpu` или `hybrid`, заданные разработчиком лимиты

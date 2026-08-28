@@ -61,13 +61,14 @@ contains
         end do
       end do
     end do
+    inverse = 1.0_c_float / real(rows, c_float)
     call kr_fortran_guard_vector_update_f32( &
-        gradient, weight_values, bias_gradient, classes, total_loss, guard_status)
+        weights, gradient, weight_values, bias, bias_gradient, classes, &
+        learning_rate, inverse, decay, total_loss, guard_status)
     if (guard_status /= 0_c_int) then
       status = 3_c_int
       return
     end if
-    inverse = 1.0_c_float / real(rows, c_float)
     call kr_fortran_update_f32(weights, gradient, learning_rate, inverse, decay, weight_values)
     call kr_update_biases(bias, bias_gradient, learning_rate, inverse, classes)
     loss = real(total_loss / real(rows, c_double), c_float)

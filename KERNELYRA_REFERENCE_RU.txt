@@ -373,11 +373,15 @@ Data Doctor и датасеты:
 У native backend пять разных ролей, а не пять независимых библиотек, которые
 нужно вручную запускать:
 
-  c-abi             — стабильная граница C ABI;
+  c-abi             — стабильная граница C ABI и C-core, который до выделения
+                      памяти проверяет размеры таблицы, minibatch и переполнения;
   cpp-dispatch      — выбор SIMD/OpenMP и безопасного fallback;
-  rust-policy       — детерминированные split/chunk policies и random sampler;
-  fortran-numeric   — переносимые dense gradient/update kernels;
-  zig-memory        — bounded memory, preprocessing и batch gather.
+  rust-policy       — детерминированные split/chunk policies, batch plan и
+                      random sampler без Python-выделения индексов;
+  fortran-numeric   — переносимые dense gradient/update kernels с preflight:
+                      следующий float32 weight/bias проверяется до записи;
+  zig-memory        — bounded memory, preprocessing и единый batch gather
+                      признаков вместе с matching target.
 
 `kernelyra native status` сообщает, что DLL собрана с компонентами и какие
 компоненты включены. Это НЕ является доказательством их использования в каждом
@@ -394,8 +398,10 @@ Data Doctor и датасеты:
       print(model.execution_trace())
 
 При полном включённом core этот короткий random-batch путь наблюдает mask 31 и
-все пять имён. Большой full-batch путь может намеренно выбрать C++ AVX2/FMA и
-не вызывать Rust/Zig sampler/gather; это нормальная оптимизация, а не ошибка.
+все пять имён. Его порядок: C проверяет контракт размерностей → Rust выбирает
+индексы → Zig переносит строки и targets → Fortran выполняет guarded update.
+Большой full-batch путь может намеренно выбрать C++ AVX2/FMA и не вызывать
+Rust/Zig sampler/gather; это нормальная оптимизация, а не ошибка.
 В AutoTrainer последняя трасса сохраняется в session.metadata["native_execution"].
 
 Fused preprocessing доступен через NativeCore.preprocess_f32(...): при

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Added an active C core under `native/core/c`: overflow-safe matrix and
+  random-minibatch contracts are checked before any native buffer resize or
+  pointer arithmetic.
+- Added a Rust batch planner and a Zig one-pass feature-plus-target gather to
+  the random-minibatch path. The previous C++ sampler/gather remains a checked
+  fallback when a component is unavailable.
+- Strengthened the Fortran pre-update guard: it now proves every candidate
+  weight and bias remains representable as finite float32 before parameters are
+  mutated. The native contract test covers this no-mutation overflow case.
+- Made the source `native build` command compile the C core too, matching the
+  CMake build graph.
+
 ## 0.6.0a1 — 2026-08-28
 
 - Added a fused Zig preprocessing route for the public `impute → normalize →

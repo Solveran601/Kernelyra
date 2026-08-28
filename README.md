@@ -32,8 +32,9 @@ Python API, PowerShell module, and JSONL protocol used by the bundled SDKs.
 - Direct training from CSV, TSV, JSONL/NDJSON, numeric NPZ, and optional
   Parquet input.
 - Bundled native and NumPy backends; optional PyTorch and TensorFlow/Keras
-  backends when installed. The native core has five observable roles: C ABI,
-  C++ dispatch, Rust policy, Fortran numeric kernels, and Zig memory kernels.
+  backends when installed. The native core has five observable roles: a C ABI
+  with checked-size guards, C++ dispatch, Rust policy, Fortran numeric kernels,
+  and Zig memory kernels.
   A model's `native_execution` trace reports engines that actually participated
   in its native calls; it never guesses that every engine ran.
 - Explicit `cpu` or `hybrid` execution, developer-set CPU/RAM/GPU/thread

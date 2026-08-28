@@ -1,5 +1,6 @@
 #include "kernelyra_core.h"
 #include "context_policy.hpp"
+#include "execution_guard.h"
 
 #include <algorithm>
 #include <array>
@@ -50,9 +51,10 @@ uint64_t kr_zig_repair_nonfinite_f32(float* data, size_t rows, size_t features, 
 uint64_t kr_zig_preprocess_f32(
     float* data, size_t rows, size_t features, const float* means, const float* stds,
     float clip_limit);
-uint32_t kr_zig_gather_rows_f32(
-    const float* source, size_t source_rows, size_t features, const size_t* selected,
-    size_t selected_rows, float* destination);
+uint32_t kr_zig_gather_batch_f32(
+    const float* source, const float* targets, size_t source_rows, size_t features,
+    const size_t* selected, size_t selected_rows, float* destination,
+    float* destination_targets);
 uint32_t kr_zig_all_finite_f32(const float* values, size_t count);
 void kr_zig_clip_f32(float* values, size_t count, float limit);
 void* kr_zig_alloc_aligned(size_t bytes, size_t alignment);
@@ -114,6 +116,9 @@ size_t kr_rust_policy_next_adaptive_chunk_size(
     uint32_t memory_pressure_percent, uint32_t aggression_percent);
 size_t kr_rust_policy_sample_indices(
     size_t rows, size_t requested, uint64_t* state, size_t* output);
+size_t kr_rust_policy_plan_batch(
+    size_t source_rows, size_t features, size_t requested_rows,
+    size_t* output_values, size_t* output_bytes);
 size_t kr_rust_policy_plan_text_chunks(
     const uint8_t* text, size_t length, size_t minimum_bytes, size_t target_bytes,
     size_t maximum_bytes, size_t overlap_bytes, kr_text_chunk* output, size_t capacity);
@@ -1280,35 +1285,42 @@ int train_random_step_impl(
       batch_size == 0 || batch_size > 1048576U) {
     return fail("invalid native random train_step arguments");
   }
+  const size_t features = model.config.features;
+  kr_c_batch_contract batch_contract{};
+  if (kr_c_core_batch_contract_make(rows, features, batch_size, &batch_contract) == 0) {
+    return fail("native random batch dimensions overflow or exceed the source table");
+  }
   try {
-    model.batch_x.resize(batch_size * model.config.features);
+    model.batch_x.resize(batch_contract.batch_elements);
     model.batch_y.resize(batch_size);
     model.batch_indices.resize(batch_size);
   } catch (const std::bad_alloc&) {
     return fail("native random batch does not fit in memory");
   }
-  const size_t features = model.config.features;
+  bool sampled_by_rust = false;
 #if KR_HAS_RUST_POLICY
+  size_t planned_values = 0U;
+  size_t planned_bytes = 0U;
   if (component_enabled(KR_COMPONENT_RUST_POLICY) &&
+      kr_rust_policy_plan_batch(rows, features, batch_size, &planned_values, &planned_bytes) == batch_size &&
+      planned_values == batch_contract.batch_elements && planned_bytes == batch_contract.batch_bytes &&
       kr_rust_policy_sample_indices(
           rows, batch_size, &model.rng_state, model.batch_indices.data()) == batch_size) {
     model.execution_mask |= KR_EXECUTION_RUST_POLICY;
-    for (size_t sample = 0; sample < batch_size; ++sample) {
-      model.batch_y[sample] = y[model.batch_indices[sample]];
-    }
-  } else
-#endif
-  {
-  for (size_t sample = 0; sample < batch_size; ++sample) {
-    const size_t selected = static_cast<size_t>(next_random(model.rng_state) % rows);
-    model.batch_indices[sample] = selected;
-    model.batch_y[sample] = y[selected];
+    sampled_by_rust = true;
   }
+#endif
+  if (!sampled_by_rust) {
+    for (size_t sample = 0; sample < batch_size; ++sample) {
+      const size_t selected = static_cast<size_t>(next_random(model.rng_state) % rows);
+      model.batch_indices[sample] = selected;
+    }
   }
 #if KR_HAS_ZIG_MEMORY
   if (component_enabled(KR_COMPONENT_ZIG_MEMORY)) {
-    if (kr_zig_gather_rows_f32(x, rows, features, model.batch_indices.data(), batch_size,
-                               model.batch_x.data()) == 0U) {
+    if (kr_zig_gather_batch_f32(
+            x, y, rows, features, model.batch_indices.data(), batch_size,
+            model.batch_x.data(), model.batch_y.data()) == 0U) {
       return fail("Zig batch gather rejected the selected rows");
     }
     model.execution_mask |= KR_EXECUTION_ZIG_MEMORY;
@@ -1318,6 +1330,7 @@ int train_random_step_impl(
     for (size_t sample = 0; sample < batch_size; ++sample) {
       const float* source = x + model.batch_indices[sample] * features;
       std::copy(source, source + features, model.batch_x.data() + sample * features);
+      model.batch_y[sample] = y[model.batch_indices[sample]];
     }
   }
   return train_model_step(model, model.batch_x.data(), model.batch_y.data(), batch_size, loss, report_loss);
@@ -1488,9 +1501,11 @@ int kr_preprocess_f32(
     float clip_limit, uint32_t flags, uint64_t* repaired_values) {
   if (repaired_values != nullptr) *repaired_values = 0U;
   if (rows == 0U || features == 0U) return 1;
-  if (data == nullptr || rows > std::numeric_limits<size_t>::max() / features) {
+  size_t matrix_elements = 0U;
+  if (data == nullptr || kr_c_core_matrix_elements(rows, features, &matrix_elements) == 0) {
     return fail("preprocess input buffer shape is invalid");
   }
+  if (matrix_elements == 0U) return fail("preprocess matrix has no addressable values");
   const bool impute = (flags & KR_PREPROCESS_IMPUTE_NONFINITE) != 0U;
   const bool normalize = (flags & KR_PREPROCESS_NORMALIZE) != 0U;
   const bool clip = (flags & KR_PREPROCESS_CLIP) != 0U;
