@@ -154,8 +154,9 @@ int main() {
   if (!expect(kr_c_core_batch_contract_make(12U, 8U, 4U, &core_batch) == 1,
               "C core validates a bounded random minibatch") ||
       !expect(core_batch.dataset_elements == 96U && core_batch.batch_elements == 32U &&
-                  core_batch.dataset_bytes == 384U && core_batch.batch_bytes == 128U,
-              "C core publishes exact float32 storage requirements") ||
+                  core_batch.dataset_bytes == 384U && core_batch.batch_bytes == 128U &&
+                  core_batch.working_bytes == 512U,
+              "C core publishes overflow-checked float32 workspace requirements") ||
       !expect(kr_c_core_batch_contract_make(12U, 8U, 13U, &core_batch) == 0,
               "C core rejects a batch that exceeds its source table")) {
     return 1;

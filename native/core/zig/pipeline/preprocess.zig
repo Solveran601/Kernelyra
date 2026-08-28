@@ -5,7 +5,7 @@
 //! pointers and the clipping limit before this kernel is entered.
 
 const std = @import("std");
-const shape = @import("memory_shape.zig");
+const shape = @import("../memory/shape.zig");
 
 pub fn preprocessF32(
     data: [*]f32,

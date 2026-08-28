@@ -1,18 +1,18 @@
 // Kernelyra memory kernels. The exported surface is a dependency-free C ABI so
 // C, C++, Rust, Go, C# and Python can share the same buffers without copies.
 
-const allocator = @import("memory_allocator.zig");
-const arena = @import("memory_arena.zig");
-const budget = @import("memory_budget.zig");
-const arithmetic = @import("memory_arithmetic.zig");
-const batch = @import("memory_batch.zig");
-const guard = @import("memory_guard.zig");
-const normalize = @import("memory_normalize.zig");
-const preprocess = @import("memory_preprocess.zig");
-const reduce = @import("memory_reduce.zig");
-const repair = @import("memory_repair.zig");
-const row_gather = @import("memory_rows.zig");
-const transfer = @import("memory_transfer.zig");
+const allocator = @import("memory/allocator.zig");
+const arena = @import("memory/arena.zig");
+const budget = @import("memory/budget.zig");
+const arithmetic = @import("memory/arithmetic.zig");
+const batch = @import("pipeline/batch.zig");
+const guard = @import("pipeline/guard.zig");
+const normalize = @import("pipeline/normalize.zig");
+const preprocess = @import("pipeline/preprocess.zig");
+const reduce = @import("pipeline/reduce.zig");
+const repair = @import("pipeline/repair.zig");
+const row_gather = @import("pipeline/rows.zig");
+const transfer = @import("memory/transfer.zig");
 
 export fn kr_zig_alloc_aligned(bytes: usize, alignment: usize) ?*anyopaque {
     return allocator.alloc(bytes, alignment);

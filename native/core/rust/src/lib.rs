@@ -7,13 +7,21 @@
 // namespace is global.  This crate contains no unsafe operations or pointers.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[path = "policy/adaptive.rs"]
 mod adaptive;
+#[path = "batch/plan.rs"]
 mod batch_plan;
+#[path = "policy/chunks.rs"]
 mod chunks;
+#[path = "policy/hash.rs"]
 mod hash;
+#[path = "policy/signature.rs"]
 mod signature;
+#[path = "batch/sampler.rs"]
 mod sampler;
+#[path = "policy/split.rs"]
 mod split;
+#[path = "policy/text_chunks.rs"]
 mod text_chunks;
 
 #[unsafe(export_name = "kr_rust_policy_mix_u64")]

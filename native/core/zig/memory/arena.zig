@@ -8,8 +8,8 @@
 //! offset.
 
 const std = @import("std");
-const alignment_rules = @import("memory_alignment.zig");
-const allocator = @import("memory_allocator.zig");
+const alignment_rules = @import("alignment.zig");
+const allocator = @import("allocator.zig");
 
 pub const Arena = struct {
     base: ?*anyopaque,

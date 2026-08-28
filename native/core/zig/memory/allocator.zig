@@ -1,6 +1,6 @@
 //! Aligned allocation boundary for the native tensor arena.
 
-const alignment_rules = @import("memory_alignment.zig");
+const alignment_rules = @import("alignment.zig");
 
 extern fn _aligned_malloc(size: usize, alignment: usize) ?*anyopaque;
 extern fn _aligned_free(pointer: ?*anyopaque) void;

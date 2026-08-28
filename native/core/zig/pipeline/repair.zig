@@ -2,7 +2,7 @@
 //! so the operation has the same row-major contract as the C++ preprocessor.
 
 const std = @import("std");
-const shape = @import("memory_shape.zig");
+const shape = @import("../memory/shape.zig");
 
 pub fn repairNonFiniteF32(data: [*]f32, rows: usize, features: usize, means: [*]const f32) u64 {
     @setRuntimeSafety(false);

@@ -147,12 +147,17 @@ def native_core_status() -> dict[str, Any]:
 def build_native_core(output_dir: str | Path | None = None) -> Path:
     """Build the Windows C ABI with Rust policy, Fortran math and Zig memory kernels."""
     root = Path(__file__).resolve().parents[2]
-    source = root / "native" / "bridge" / "cpp" / "core_abi.cpp"
-    policy_source = root / "native" / "bridge" / "cpp" / "context_policy.cpp"
-    c_guard_source = root / "native" / "core" / "c" / "execution_guard.c"
-    c_guard_headers = root / "native" / "core" / "c"
+    source = root / "native" / "core" / "cpp" / "abi" / "core_abi.cpp"
+    policy_source = root / "native" / "core" / "cpp" / "policy" / "context_policy.cpp"
+    c_sources = (
+        root / "native" / "core" / "c" / "contract" / "checked_arithmetic.c",
+        root / "native" / "core" / "c" / "contract" / "matrix_contract.c",
+        root / "native" / "core" / "c" / "contract" / "batch_contract.c",
+    )
+    c_public_headers = root / "native" / "core" / "c" / "include"
+    c_contract_headers = root / "native" / "core" / "c" / "contract"
     headers = root / "native" / "include"
-    if not source.is_file() or not policy_source.is_file() or not c_guard_source.is_file():
+    if not source.is_file() or not policy_source.is_file() or not all(item.is_file() for item in c_sources):
         raise NativeCoreError("Native C/C++ ABI bridge sources are not present in this installation")
     destination = Path(output_dir) if output_dir else Path(__file__).resolve().parent / "native_bin"
     destination.mkdir(parents=True, exist_ok=True)
@@ -178,23 +183,23 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
         fortran_sources = [
             root / "native" / "core" / "fortran" / name
             for name in (
-                "numeric_constants.f90",
-                "numeric_precision.f90",
-                "numeric_moments.f90",
-                "activation_softmax.f90",
-                "loss_binary.f90",
-                "loss_multiclass.f90",
-                "loss_regression.f90",
-                "gradient_layout.f90",
-                "workspace_kernels.f90",
-                "vector_kernels.f90",
-                "gradient_kernels.f90",
-                "optimizer_clip.f90",
-                "training_guard.f90",
-                "training_state.f90",
-                "matrix_scores.f90",
-                "multiclass_training.f90",
-                "training_kernels.f90",
+                "numerics/numeric_constants.f90",
+                "numerics/numeric_precision.f90",
+                "numerics/numeric_moments.f90",
+                "numerics/activation_softmax.f90",
+                "numerics/loss_binary.f90",
+                "numerics/loss_multiclass.f90",
+                "numerics/loss_regression.f90",
+                "training/gradient_layout.f90",
+                "training/workspace_kernels.f90",
+                "numerics/vector_kernels.f90",
+                "training/gradient_kernels.f90",
+                "numerics/optimizer_clip.f90",
+                "training/training_guard.f90",
+                "training/training_state.f90",
+                "training/matrix_scores.f90",
+                "training/multiclass_training.f90",
+                "training/training_kernels.f90",
             )
         ]
         rust_manifest = root / "native" / "core" / "rust" / "Cargo.toml"
@@ -304,7 +309,9 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-I",
                 str(headers),
                 "-I",
-                str(c_guard_headers),
+                str(c_public_headers),
+                "-I",
+                str(c_contract_headers),
                 *defines,
                 "-shared",
                 "-static",
@@ -312,7 +319,7 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-static-libstdc++",
                 str(source),
                 str(policy_source),
-                str(c_guard_source),
+                *(str(item) for item in c_sources),
                 *(str(item) for item in objects),
                 "-o",
                 str(output),
@@ -357,10 +364,12 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             "-I",
             str(headers),
             "-I",
-            str(c_guard_headers),
+            str(c_public_headers),
+            "-I",
+            str(c_contract_headers),
             str(source),
             str(policy_source),
-            str(c_guard_source),
+            *(str(item) for item in c_sources),
             "-o",
             str(output),
         ]

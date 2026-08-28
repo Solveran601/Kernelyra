@@ -6,17 +6,20 @@ training loop translated into several languages.
 ```text
 native/
 ├── core/
-│   ├── fortran/     moments, activations, losses, optimizers and all tabular training kernels
-│   ├── rust/        splits, adaptive policies and UTF-8 text-span planning
-│   └── zig/         alignment, allocation, batches, transforms, reductions and guards
-├── bridge/cpp/      compact C ABI, bounded CSV streaming and safe fallback
-├── bindings/c/      C cursor library for bounded context-safe chunks
+│   ├── c/           checked size arithmetic and CPU-memory execution contracts
+│   ├── cpp/         ABI/model lifetime bridge and deterministic fallback policy
+│   ├── fortran/     numerics/ + training/: moments, losses, optimizers and update kernels
+│   ├── rust/        policy/ + batch/: deterministic splits, planners and samplers
+│   └── zig/         memory/ + pipeline/: aligned arenas, gathering, transforms and guards
+├── bindings/        language-facing adapters that call the stable ABI, never duplicate a kernel
+│   └── c/           C cursor library for bounded context-safe chunks
 ├── include/         stable C/C++/Rust-facing ABI header
 ├── tools/           safe dataset signature probe
 └── CMakeLists.txt   reproducible native build
 ```
 
-Rust, Fortran and Zig are the active low-level engine components. Fortran owns
+All five directories in `core/` are compiled into the released native binary.
+Fortran owns
 the active binary, multiclass and regression update paths, together with stable
 moments, softmax, cross-entropy, dense scores, gradients and opt-in L2 gradient
 clipping. Its files are divided by numerical responsibility so a loss,
@@ -27,8 +30,8 @@ Rust owns deterministic context-safe train/validation/test
 assignment, bounded variable-size chunk policies and UTF-8 text-span planning.
 Its adaptive extension accepts explicit memory pressure and algorithm
 aggression, not guessed PC classes.
-C exposes a validated execution-plan contract for CPU/RAM/GPU/thread budgets.
-C++ is the deliberately small ABI, CSV-streaming and model-lifetime bridge; it
+C exposes the overflow-checked execution and workspace contracts before any
+other core allocates. C++ is the deliberately small ABI, CSV-streaming and model-lifetime bridge; it
 does not own the normal numerical update path. It retains scalar/AVX fallbacks
 only for diagnostics and builds without the Fortran component. Rust, C and C++
 consume the ABI directly; Python is only the high-level orchestration and

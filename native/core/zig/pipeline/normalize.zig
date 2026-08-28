@@ -1,6 +1,6 @@
 //! Cache-friendly row-major float32 standardization.
 
-const shape = @import("memory_shape.zig");
+const shape = @import("../memory/shape.zig");
 
 pub fn normalizeF32(
     data: [*]f32,

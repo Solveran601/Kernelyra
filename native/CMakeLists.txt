@@ -5,30 +5,32 @@ include(CTest)
 add_executable(dataset_probe tools/dataset_probe.cpp)
 target_compile_features(dataset_probe PRIVATE cxx_std_17)
 set(KERNELYRA_NATIVE_SOURCES
-  bridge/cpp/core_abi.cpp
-  bridge/cpp/context_policy.cpp
-  core/c/execution_guard.c
-  core/fortran/numeric_constants.f90
-  core/fortran/numeric_precision.f90
-  core/fortran/numeric_moments.f90
-  core/fortran/activation_softmax.f90
-  core/fortran/loss_binary.f90
-  core/fortran/loss_multiclass.f90
-  core/fortran/loss_regression.f90
-  core/fortran/gradient_layout.f90
-  core/fortran/workspace_kernels.f90
-  core/fortran/vector_kernels.f90
-  core/fortran/gradient_kernels.f90
-  core/fortran/optimizer_clip.f90
-  core/fortran/training_guard.f90
-  core/fortran/training_state.f90
-  core/fortran/matrix_scores.f90
-  core/fortran/multiclass_training.f90
-  core/fortran/training_kernels.f90
+  core/cpp/abi/core_abi.cpp
+  core/cpp/policy/context_policy.cpp
+  core/c/contract/checked_arithmetic.c
+  core/c/contract/matrix_contract.c
+  core/c/contract/batch_contract.c
+  core/fortran/numerics/numeric_constants.f90
+  core/fortran/numerics/numeric_precision.f90
+  core/fortran/numerics/numeric_moments.f90
+  core/fortran/numerics/activation_softmax.f90
+  core/fortran/numerics/loss_binary.f90
+  core/fortran/numerics/loss_multiclass.f90
+  core/fortran/numerics/loss_regression.f90
+  core/fortran/training/gradient_layout.f90
+  core/fortran/training/workspace_kernels.f90
+  core/fortran/numerics/vector_kernels.f90
+  core/fortran/training/gradient_kernels.f90
+  core/fortran/numerics/optimizer_clip.f90
+  core/fortran/training/training_guard.f90
+  core/fortran/training/training_state.f90
+  core/fortran/training/matrix_scores.f90
+  core/fortran/training/multiclass_training.f90
+  core/fortran/training/training_kernels.f90
 )
 add_library(kernelyra_core SHARED ${KERNELYRA_NATIVE_SOURCES})
 target_compile_features(kernelyra_core PRIVATE cxx_std_17)
-target_include_directories(kernelyra_core PRIVATE include core/c)
+target_include_directories(kernelyra_core PRIVATE include core/c/include core/c/contract)
 target_compile_definitions(kernelyra_core PRIVATE KR_HAS_FORTRAN_NUMERIC=1)
 find_program(KERNELYRA_CARGO_EXECUTABLE cargo REQUIRED)
 set(KERNELYRA_RUST_TARGET x86_64-pc-windows-gnu)
@@ -42,14 +44,14 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml" --release --target ${KERNELYRA_RUST_TARGET}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/Cargo.toml"
           "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/lib.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/adaptive.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/batch_plan.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/chunks.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/hash.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/signature.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/sampler.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/split.rs"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/text_chunks.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/adaptive.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/batch/plan.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/chunks.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/hash.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/signature.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/batch/sampler.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/split.rs"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/rust/src/policy/text_chunks.rs"
   VERBATIM)
 add_custom_target(kernelyra_rust_policy DEPENDS "${KERNELYRA_RUST_LIBRARY}")
 add_library(kernelyra_rust_policy_static STATIC IMPORTED GLOBAL)
@@ -70,22 +72,22 @@ add_custom_command(
           "${KERNELYRA_ZIG_EXECUTABLE}" build-obj "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
           -O ReleaseFast -target x86_64-windows-gnu -femit-bin=${KERNELYRA_ZIG_OBJECT}
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_kernels.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_alignment.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_allocator.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arena.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_batch.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_budget.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_arithmetic.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_clip.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_finite.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_transfer.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_guard.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_normalize.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_preprocess.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_reduce.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_repair.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_rows.zig"
-          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory_shape.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/alignment.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/allocator.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/arena.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/batch.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/budget.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/arithmetic.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/clip.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/finite.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/transfer.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/guard.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/normalize.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/preprocess.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/reduce.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/repair.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/pipeline/rows.zig"
+          "${CMAKE_CURRENT_SOURCE_DIR}/core/zig/memory/shape.zig"
   VERBATIM)
 set_source_files_properties("${KERNELYRA_ZIG_OBJECT}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 target_sources(kernelyra_core PRIVATE "${KERNELYRA_ZIG_OBJECT}")
@@ -97,7 +99,7 @@ target_link_libraries(kernelyra_c_policy PUBLIC kernelyra_core)
 if(BUILD_TESTING)
   add_executable(kernelyra_native_contract_tests tools/native_contract_tests.cpp)
   target_compile_features(kernelyra_native_contract_tests PRIVATE cxx_std_17)
-  target_include_directories(kernelyra_native_contract_tests PRIVATE include bindings/c/include core/c)
+  target_include_directories(kernelyra_native_contract_tests PRIVATE include bindings/c/include core/c/include)
   target_link_libraries(kernelyra_native_contract_tests PRIVATE kernelyra_core kernelyra_c_policy)
   add_test(NAME kernelyra_native_contract_tests COMMAND kernelyra_native_contract_tests)
 endif()
