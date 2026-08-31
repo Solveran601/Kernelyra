@@ -10,12 +10,11 @@ from typing import Any
 
 from .architectures import resolve_training_contract
 from .batch import plan_batch
-from .data_health import analyze_inspection
+from .checkpoints import resolve_checkpoint_policy
+from .data_health import analyze_inspection, estimate_records
 from .errors import ConfigurationError, DatasetError, RunError
 from .hardware import (
     execution_policy,
-    legacy_profile_for_pack,
-    resolve_algorithm_pack,
     resolve_execution_target,
 )
 from .models import DatasetInfo, RunConfig, RunInfo, RunStatus, TaskType
@@ -34,9 +33,7 @@ _ENV_KEYS = {
     "backend": "KERNELYRA_BACKEND",
     "architecture": "KERNELYRA_ARCHITECTURE",
     "model_format": "KERNELYRA_MODEL_FORMAT",
-    "profile": "KERNELYRA_PROFILE",
     "execution": "KERNELYRA_EXECUTION",
-    "algorithm_pack": "KERNELYRA_ALGORITHM_PACK",
     "batch_size": "KERNELYRA_BATCH_SIZE",
     "max_steps": "KERNELYRA_MAX_STEPS",
     "target_metric": "KERNELYRA_TARGET_METRIC",
@@ -49,6 +46,7 @@ _ENV_KEYS = {
     "weight_decay": "KERNELYRA_WEIGHT_DECAY",
     "hidden_layers": "KERNELYRA_HIDDEN_LAYERS",
     "precision": "KERNELYRA_PRECISION",
+    "data_mode": "KERNELYRA_DATA_MODE",
     "data_workers": "KERNELYRA_DATA_WORKERS",
     "prefetch": "KERNELYRA_PREFETCH",
     "evaluation_interval": "KERNELYRA_EVALUATION_INTERVAL",
@@ -57,6 +55,15 @@ _ENV_KEYS = {
     "degradation_patience": "KERNELYRA_DEGRADATION_PATIENCE",
     "early_stopping_patience": "KERNELYRA_EARLY_STOPPING_PATIENCE",
     "target_patience": "KERNELYRA_TARGET_PATIENCE",
+    "validation_percent": "KERNELYRA_VALIDATION_PERCENT",
+    "test_percent": "KERNELYRA_TEST_PERCENT",
+    "group_column": "KERNELYRA_GROUP_COLUMN",
+    "chunk_target_records": "KERNELYRA_CHUNK_TARGET_RECORDS",
+    "chunk_minimum_records": "KERNELYRA_CHUNK_MINIMUM_RECORDS",
+    "chunk_maximum_records": "KERNELYRA_CHUNK_MAXIMUM_RECORDS",
+    "checkpoint_resume": "KERNELYRA_CHECKPOINT_RESUME",
+    "checkpoint_final": "KERNELYRA_CHECKPOINT_FINAL",
+    "checkpoint_rollback": "KERNELYRA_CHECKPOINT_ROLLBACK",
 }
 
 _DEFAULTS: dict[str, Any] = {
@@ -65,9 +72,7 @@ _DEFAULTS: dict[str, Any] = {
     "backend": "auto",
     "architecture": "auto",
     "model_format": "auto",
-    "profile": "auto",
     "execution": "auto",
-    "algorithm_pack": "balanced",
     "batch_size": None,
     "max_steps": 1400,
     "target_metric": None,
@@ -80,6 +85,7 @@ _DEFAULTS: dict[str, Any] = {
     "weight_decay": 0.0,
     "hidden_layers": None,
     "precision": "auto",
+    "data_mode": "auto",
     "data_workers": None,
     "prefetch": None,
     "evaluation_interval": None,
@@ -88,41 +94,29 @@ _DEFAULTS: dict[str, Any] = {
     "degradation_patience": 3,
     "early_stopping_patience": 18,
     "target_patience": 3,
+    "validation_percent": 15,
+    "test_percent": 15,
+    "group_column": None,
+    "chunk_target_records": None,
+    "chunk_minimum_records": None,
+    "chunk_maximum_records": None,
+    "checkpoint_resume": "none",
+    "checkpoint_final": "none",
+    "checkpoint_rollback": "none",
 }
 
 _INTEGER_FIELDS = {
     "batch_size", "max_steps", "cpu", "ram", "gpu", "threads", "seed", "data_workers", "prefetch",
     "evaluation_interval", "degradation_patience", "early_stopping_patience", "target_patience",
+    "validation_percent", "test_percent", "chunk_target_records", "chunk_minimum_records", "chunk_maximum_records",
 }
 _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvement", "degradation_margin"}
+_REMOVED_OPTION_NAMES = {"algorithm_pack", "profile"}
+_REMOVED_ENV_KEYS = {"KERNELYRA_ALGORITHM_PACK", "KERNELYRA_PROFILE"}
 
 
 def _stream_limit(policy: Mapping[str, Any], maximum: int) -> int:
     return min(maximum, int(policy["stream_limit"]))
-
-
-def _estimate_text_records(source: Path, size: int, sampled: int, preview_bytes: int, preview_count: int) -> int:
-    """Estimate newline-delimited table rows with at most an 8 MiB read.
-
-    The router intentionally exposes a small preview.  For CSV/TSV/JSONL,
-    counting a bounded prefix gives a much better planning estimate without
-    materialising the dataset or scanning a multi-gigabyte source in full.
-    """
-    if not source.is_file() or source.suffix.lower() not in {".csv", ".tsv", ".jsonl", ".ndjson"}:
-        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
-    sample_size = min(size, 8 * 1024 * 1024)
-    try:
-        with source.open("rb") as handle:
-            prefix = handle.read(sample_size)
-    except OSError:
-        return max(sampled, int(size / max(1, preview_bytes / preview_count)))
-    lines = prefix.count(b"\n")
-    if source.suffix.lower() in {".csv", ".tsv"}:
-        lines = max(0, lines - 1)
-    if size <= sample_size:
-        return max(sampled, lines + (1 if prefix and not prefix.endswith(b"\n") else 0))
-    bytes_per_record = sample_size / max(1, lines)
-    return max(sampled, int(size / bytes_per_record))
 
 
 def _coerce(name: str, value: Any) -> Any:
@@ -143,7 +137,9 @@ def _coerce(name: str, value: Any) -> Any:
         if any(item < 1 or item > 65_536 for item in result):
             raise ConfigurationError("hidden_layers values must be between 1 and 65536")
         return result
-    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision"}:
+    if name == "group_column":
+        return str(value).strip()
+    if name in {"task", "backend", "architecture", "model_format", "execution", "precision", "data_mode", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback"}:
         return str(value).strip().lower()
     return str(value)
 
@@ -169,10 +165,7 @@ class TrainingPlan:
     backend: str
     architecture: str
     model_format: str
-    profile: str
     execution: str
-    algorithm_pack: str
-    execution_mode: str
     batch_size: int
     max_steps: int
     target_metric: float
@@ -193,6 +186,10 @@ class TrainingPlan:
     degradation_patience: int
     early_stopping_patience: int
     target_patience: int
+    validation_percent: int
+    test_percent: int
+    group_column: str | None
+    checkpoint_policy: dict[str, str]
     records_estimate: int
     features_estimate: int
     size_bytes: int
@@ -241,7 +238,7 @@ class AutoTrainer:
 
     def __init__(
         self,
-        workspace: str | Path = ".",
+        workspace: str | Path | None = None,
         *,
         config: str | Path | None = None,
         environ: Mapping[str, str] | None = None,
@@ -267,6 +264,21 @@ class AutoTrainer:
 
     def _resolve(self, explicit: Mapping[str, Any]) -> _Resolved:
         configured = _config_values(self.config_path)
+        removed = sorted(set(configured) & _REMOVED_OPTION_NAMES)
+        if removed:
+            raise ConfigurationError(
+                "Removed training option(s): " + ", ".join(removed) + ". "
+                "Use explicit execution and CPU/RAM/GPU/thread limits instead."
+            )
+        unknown_configured = sorted(set(configured) - set(_DEFAULTS))
+        if unknown_configured:
+            raise ConfigurationError("Unknown training config option(s): " + ", ".join(unknown_configured))
+        active_removed_env = sorted(name for name in _REMOVED_ENV_KEYS if self.environ.get(name, "") != "")
+        if active_removed_env:
+            raise ConfigurationError(
+                "Removed environment option(s): " + ", ".join(active_removed_env) + ". "
+                "Use KERNELYRA_EXECUTION and explicit resource environment variables instead."
+            )
         values: dict[str, Any] = {}
         sources: dict[str, str] = {}
         for name, default in _DEFAULTS.items():
@@ -311,11 +323,20 @@ class AutoTrainer:
                 raise ConfigurationError(str(item.get("diagnostic") or f"Backend '{requested}' is unavailable"))
             if task not in item.get("task_types", []):
                 raise ConfigurationError(f"Backend '{requested}' does not support task '{task}'")
+            if policy["execution"] not in item.get("execution_targets", ["cpu"]):
+                raise ConfigurationError(
+                    f"Backend '{requested}' is CPU-only. Hybrid execution requires a compatible PyTorch or TensorFlow GPU backend."
+                )
             return requested
         for candidate in tuple(policy["backend_order"]):
             item = backends.get(candidate)
             if item and item.get("available") and task in item.get("task_types", []):
                 return candidate
+        if policy["execution"] == "hybrid":
+            raise ConfigurationError(
+                "Hybrid execution requires an installed PyTorch or TensorFlow backend with a usable GPU; "
+                "buy or enable a compatible GPU, or use execution='cpu'."
+            )
         raise ConfigurationError(f"No available backend supports task '{task}'")
 
     def plan(self, dataset: str | Path, **overrides: Any) -> TrainingPlan:
@@ -330,6 +351,13 @@ class AutoTrainer:
         if not inspection.get("trainable"):
             raise DatasetError("Dataset format is recognized but no trainable ingestor is installed")
         target = resolved.values["target"] or inspection.get("suggested_target")
+        columns = [str(column) for column in (inspection.get("columns") or [])]
+        if target is not None and columns and str(target) not in columns:
+            preview = ", ".join(columns[:12])
+            suffix = ", ..." if len(columns) > 12 else ""
+            raise DatasetError(
+                f"Target column '{target}' was not found in the dataset. Available columns: {preview}{suffix}"
+            )
         task = resolved.values["task"]
         if task == "auto":
             inspected_tasks = inspection.get("task_types") or []
@@ -337,20 +365,12 @@ class AutoTrainer:
         if task not in {item.value for item in TaskType}:
             raise ConfigurationError(f"Unknown task '{task}'")
         try:
-            # ``profile`` remains accepted only to migrate old configuration;
-            # new code names an algorithm pack and an execution target.
-            selected_pack = resolve_algorithm_pack(
-                resolved.values["algorithm_pack"] if resolved.values["profile"] == "auto" else resolved.values["profile"]
-            )
             execution = resolve_execution_target(resolved.values["execution"], self.workspace.hardware)
         except KeyError as error:
             raise ConfigurationError(str(error)) from None
-        profile = legacy_profile_for_pack(selected_pack)
         policy = execution_policy(
-            profile,
             self.workspace.hardware,
             execution_target=execution,
-            algorithm_pack=selected_pack,
         )
         backend = self._select_backend(resolved.values["backend"], task, policy)
         architecture, model_format = resolve_training_contract(
@@ -366,7 +386,10 @@ class AutoTrainer:
         if not 0 <= gpu <= 100:
             raise ConfigurationError("gpu must be between 0 and 100 percent")
         if execution == "cpu" and gpu:
-            raise ConfigurationError("CPU execution cannot reserve GPU; choose execution='hybrid' to use an accelerator")
+            raise ConfigurationError(
+                "GPU budget was requested for CPU-only execution. Choose execution='hybrid'; "
+                "if no accelerator is detected, buy or enable a compatible GPU."
+            )
         cpu_threads = max(1, int(self.workspace.hardware.get("cpu_threads") or 1))
         threads = resolved.values["threads"]
         if threads is None:
@@ -374,24 +397,14 @@ class AutoTrainer:
         threads = int(threads)
         if not 1 <= threads <= cpu_threads:
             raise ConfigurationError(f"threads must be between 1 and detected CPU thread count ({cpu_threads})")
-        columns = inspection.get("columns") or []
         shape = inspection.get("shape") or []
         features = max(1, int(shape[1]) if len(shape) >= 2 else len(columns) - 1)
-        sampled = max(1, int(inspection.get("sampled_rows") or 1))
         size = int(inspection.get("bytes") or source.stat().st_size)
-        preview_bytes = max(1, sum(len(str(row)) for row in inspection.get("preview") or []))
-        preview_count = max(1, len(inspection.get("preview") or []))
-        known_records = inspection.get("rows") or (shape[0] if len(shape) >= 2 else None)
-        records = (
-            int(known_records)
-            if known_records
-            else _estimate_text_records(source, size, sampled, preview_bytes, preview_count)
-        )
+        records = estimate_records(source, inspection)
         requested_batch = resolved.values["batch_size"]
         batch = plan_batch(
             records=records,
             features=features,
-            profile=profile,
             ram_percent=ram,
             ram_gb=float(self.workspace.hardware.get("ram_gb") or 8),
             mode="manual" if requested_batch is not None else "auto",
@@ -464,34 +477,86 @@ class AutoTrainer:
             raise ConfigurationError("early_stopping_patience must be between 1 and 10000")
         if not 1 <= target_patience <= 100:
             raise ConfigurationError("target_patience must be between 1 and 100")
+        validation_percent = int(resolved.values["validation_percent"])
+        test_percent = int(resolved.values["test_percent"])
+        if not 0 <= validation_percent <= 95 or not 0 <= test_percent <= 95:
+            raise ConfigurationError("validation_percent and test_percent must be between 0 and 95")
+        if validation_percent + test_percent > 95:
+            raise ConfigurationError("validation_percent + test_percent must leave at least 5% for training")
+        group_column = resolved.values["group_column"]
+        chunk_target_records = resolved.values["chunk_target_records"]
+        chunk_minimum_records = resolved.values["chunk_minimum_records"]
+        chunk_maximum_records = resolved.values["chunk_maximum_records"]
+        try:
+            checkpoint_policy = resolve_checkpoint_policy(
+                {
+                    "resume": resolved.values["checkpoint_resume"],
+                    "final": resolved.values["checkpoint_final"],
+                    "rollback": resolved.values["checkpoint_rollback"],
+                }
+            )
+        except RunError as error:
+            raise ConfigurationError(str(error)) from None
         warnings = list(batch.warnings)
         streaming_formats = {".csv", ".tsv", ".jsonl", ".ndjson", ".parquet", ".pq"}
         # Text tables expand substantially when parsed into Python/NumPy values.
         # A fixed 512 MiB copy limit is therefore unsafe on low-memory machines:
         # the source, decoded rows, encoded arrays and train/validation/test
         # buffers can coexist. Select the streaming path from the resolved
-        # hardware profile instead of waiting for the import hard limit.
+        # resolved RAM limit instead of waiting for the import hard limit.
         stream_limit = _stream_limit(policy, self.workspace.datasets.MAX_IMPORT_BYTES)
-        data_mode = "stream" if source.is_dir() or size > stream_limit else "memory"
+        requested_data_mode = resolved.values["data_mode"]
+        if requested_data_mode not in {"auto", "memory", "stream"}:
+            raise ConfigurationError("data_mode must be auto, memory or stream")
+        automatic_data_mode = "stream" if source.is_dir() or size > stream_limit else "memory"
+        if requested_data_mode == "memory" and automatic_data_mode == "stream":
+            raise ConfigurationError(
+                "data_mode='memory' is unsafe for this dataset; use data_mode='stream' or automatic mode"
+            )
+        data_mode = automatic_data_mode if requested_data_mode == "auto" else requested_data_mode
         if data_mode == "stream" and source.is_file() and source.suffix.lower() not in streaming_formats:
             raise DatasetError(
                 f"Dataset exceeds the in-memory limit, but {source.suffix or 'this format'} has no streaming reader"
             )
         if data_mode == "stream":
-            warnings.append("Dataset will use the external streaming path; the source file must remain available")
-        data_health = analyze_inspection(
-            inspection,
-            target=str(target) if target is not None else None,
-            records_estimate=records,
-            feature_count=features,
-            seed=int(resolved.values["seed"]),
-            chunk_target_records=int(policy["chunk_target_records"]),
-        )
+            origin = "explicit" if requested_data_mode == "stream" else "automatic"
+            warnings.append(
+                f"Dataset will use the external streaming path ({origin}); the source file must remain available"
+            )
+        try:
+            data_health = analyze_inspection(
+                inspection,
+                target=str(target) if target is not None else None,
+                records_estimate=records,
+                feature_count=features,
+                seed=int(resolved.values["seed"]),
+                chunk_target_records=(
+                    int(policy["chunk_target_records"])
+                    if chunk_target_records is None
+                    else int(chunk_target_records)
+                ),
+                chunk_minimum_records=(
+                    None if chunk_minimum_records is None else int(chunk_minimum_records)
+                ),
+                chunk_maximum_records=(
+                    None if chunk_maximum_records is None else int(chunk_maximum_records)
+                ),
+                validation_percent=validation_percent,
+                test_percent=test_percent,
+                group_column=group_column,
+                streaming=data_mode == "stream",
+            )
+        except ValueError as error:
+            raise ConfigurationError(str(error)) from None
         data_contract = dict(data_health["contract"])
         split_policy = dict(data_contract["split_policy"])
         chunk_policy = dict(data_contract["chunk_policy"])
         warnings.extend(str(item) for item in data_health["warnings"])
         if split_policy["strategy"] == "context":
+            if requested_data_mode == "memory":
+                raise ConfigurationError(
+                    "data_mode='memory' cannot preserve group/context boundaries; use data_mode='stream' or automatic mode"
+                )
             if source.is_dir() or source.suffix.lower() in streaming_formats:
                 if data_mode != "stream":
                     data_mode = "stream"
@@ -509,10 +574,7 @@ class AutoTrainer:
             backend=backend,
             architecture=architecture,
             model_format=model_format,
-            profile=profile,
             execution=execution,
-            algorithm_pack=selected_pack,
-            execution_mode=selected_pack,
             batch_size=batch.applied,
             max_steps=max_steps,
             target_metric=target_metric,
@@ -533,6 +595,10 @@ class AutoTrainer:
             degradation_patience=degradation_patience,
             early_stopping_patience=early_stopping_patience,
             target_patience=target_patience,
+            validation_percent=validation_percent,
+            test_percent=test_percent,
+            group_column=group_column,
+            checkpoint_policy=checkpoint_policy,
             records_estimate=records,
             features_estimate=features,
             size_bytes=size,
@@ -552,11 +618,19 @@ class AutoTrainer:
         progress: Callable[[RunInfo], None] | None = None,
         poll_interval: float = .25,
         model: str | Path | None = None,
+        base_run_id: str | None = None,
         **overrides: Any,
     ) -> TrainingResult:
         plan = self.plan(dataset, **overrides)
         if plan.data_mode == "stream":
-            imported = self.workspace.datasets.attach_path(plan.dataset, plan.target)
+            imported = self.workspace.datasets.attach_path(
+                plan.dataset,
+                plan.target,
+                split_seed=plan.seed,
+                validation_percent=plan.validation_percent,
+                test_percent=plan.test_percent,
+                group_column=plan.group_column,
+            )
         else:
             imported = self.workspace.datasets.import_file(plan.dataset, plan.target)
         task = plan.task if plan.task in imported.task_types else imported.task_types[0]
@@ -564,15 +638,10 @@ class AutoTrainer:
             plan.backend,
             task,
             execution_policy(
-                plan.profile,
                 self.workspace.hardware,
                 execution_target=plan.execution,
-                algorithm_pack=plan.algorithm_pack,
             ),
         )
-        imported_contract = imported.manifest.get("data_contract")
-        if not isinstance(imported_contract, dict):
-            imported_contract = plan.data_contract
         plan = replace(
             plan,
             target=imported.target,
@@ -580,9 +649,6 @@ class AutoTrainer:
             backend=backend,
             records_estimate=imported.records,
             features_estimate=imported.features,
-            data_contract=imported_contract,
-            split_policy=dict(imported_contract.get("split_policy") or plan.split_policy),
-            chunk_policy=dict(imported_contract.get("chunk_policy") or plan.chunk_policy),
         )
         run = self.workspace.create_run(
             RunConfig(
@@ -593,9 +659,7 @@ class AutoTrainer:
                 model_format=plan.model_format,
                 name=str(overrides.get("name") or Path(plan.dataset).stem)[:80],
                 mode="Fine-tune" if model else "Train",
-                profile=plan.profile,
                 execution=plan.execution,
-                algorithm_pack=plan.algorithm_pack,
                 target_metric=plan.target_metric,
                 batch_mode="manual" if overrides.get("batch_size") is not None else "auto",
                 batch_size=plan.batch_size,
@@ -604,6 +668,7 @@ class AutoTrainer:
                 ram=plan.ram,
                 gpu=plan.gpu,
                 threads=plan.threads,
+                base_run_id=base_run_id,
                 model_path=str(Path(model).expanduser().resolve()) if model else None,
                 accept_batch_risk=True,
                 seed=plan.seed,
@@ -619,6 +684,7 @@ class AutoTrainer:
                 degradation_patience=plan.degradation_patience,
                 early_stopping_patience=plan.early_stopping_patience,
                 target_patience=plan.target_patience,
+                checkpoint_policy=plan.checkpoint_policy,
                 data_contract=plan.data_contract,
                 split_policy=plan.split_policy,
                 chunk_policy=plan.chunk_policy,
@@ -638,12 +704,17 @@ class AutoTrainer:
             progress(current)
         if current.status in {RunStatus.ERROR.value, RunStatus.ERROR_RECOVERABLE.value}:
             raise RunError(current.message)
-        checkpoint = self.workspace.runtime.checkpoint_path(current.id)
+        final_kind = plan.checkpoint_policy["final"]
+        checkpoint = (
+            self.workspace.runtime.checkpoint_path(current.id, kind=final_kind)
+            if final_kind != "none"
+            else None
+        )
         return TrainingResult(
             plan=plan,
             dataset=imported,
             run=current,
-            checkpoint_path=str(checkpoint) if checkpoint.is_file() else None,
+            checkpoint_path=str(checkpoint) if checkpoint is not None and checkpoint.is_file() else None,
         )
 
     def finetune(
@@ -665,15 +736,25 @@ class AutoTrainer:
             )
             if overrides["backend"] is None:
                 raise ConfigurationError("Cannot infer a backend from the model extension; set backend explicitly")
-        return self.train(dataset, model=model_path, **overrides)
+        base_run_id: str | None = None
+        try:
+            metadata = self.workspace.runtime.checkpoints.verify(model_path)
+            candidate = metadata.get("run_id")
+            if isinstance(candidate, str) and self.workspace.storage.get_run(candidate) is not None:
+                base_run_id = candidate
+        except RunError:
+            # External checkpoints remain valid fine-tune inputs.  They have
+            # no local run lineage to preserve.
+            pass
+        return self.train(dataset, model=model_path, base_run_id=base_run_id, **overrides)
 
 
-def plan(dataset: str | Path, *, workspace: str | Path = ".", config: str | Path | None = None, **options: Any) -> TrainingPlan:
+def plan(dataset: str | Path, *, workspace: str | Path | None = None, config: str | Path | None = None, **options: Any) -> TrainingPlan:
     with AutoTrainer(workspace, config=config) as trainer:
         return trainer.plan(dataset, **options)
 
 
-def train(dataset: str | Path, *, workspace: str | Path = ".", config: str | Path | None = None, **options: Any) -> TrainingResult:
+def train(dataset: str | Path, *, workspace: str | Path | None = None, config: str | Path | None = None, **options: Any) -> TrainingResult:
     with AutoTrainer(workspace, config=config) as trainer:
         return trainer.train(dataset, **options)
 
@@ -682,7 +763,7 @@ def finetune(
     model: str | Path,
     dataset: str | Path,
     *,
-    workspace: str | Path = ".",
+    workspace: str | Path | None = None,
     config: str | Path | None = None,
     **options: Any,
 ) -> TrainingResult:

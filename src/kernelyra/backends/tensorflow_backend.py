@@ -25,6 +25,7 @@ def _tensorflow() -> Any:
 class TensorFlowBackend:
     name = "tensorflow"
     version = "1.0"
+    execution_targets = ("cpu", "hybrid")
     task_types = tuple(item.value for item in TaskType)
     metrics = (
         "loss",
@@ -50,6 +51,11 @@ class TensorFlowBackend:
         gpu_limit = int(config.resource_limits.get("gpu_memory_mb") or 0)
         gpu_enabled = bool(config.resource_limits.get("gpu_enabled"))
         gpus = tf.config.list_physical_devices("GPU")
+        if gpu_enabled and not gpus:
+            raise ValueError(
+                "Hybrid execution requested a GPU, but TensorFlow cannot access one. "
+                "Buy or enable a compatible GPU, then retry; otherwise use execution='cpu'."
+            )
         if not gpu_enabled and gpus:
             tf.config.set_visible_devices([], "GPU")
             gpus = []
@@ -98,13 +104,7 @@ class TensorFlowBackend:
             )
             all_y = y
         test_size = len(test_y)
-        widths = list(config.hidden_layers) if config.hidden_layers else {
-            "eco": [16, 8],
-            "low-memory": [16, 8],
-            "balanced": [32, 16],
-            "performance": [64, 32, 16],
-            "workstation": [128, 64, 32],
-        }.get(config.profile, [32, 16])
+        widths = list(config.hidden_layers) if config.hidden_layers else [64, 32]
         class_count = int(max(all_y)) + 1 if config.task_type == TaskType.MULTICLASS_CLASSIFICATION.value else 1
 
         if config.model_path:
@@ -134,13 +134,7 @@ class TensorFlowBackend:
             loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
         else:
             loss_fn = tf.keras.losses.MeanSquaredError()
-        learning_rate = config.learning_rate or {
-            "eco": .0015,
-            "low-memory": .0015,
-            "balanced": .002,
-            "performance": .0025,
-            "workstation": .0025,
-        }.get(config.profile, .002)
+        learning_rate = config.learning_rate or .002
         optimizer = tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=config.weight_decay)
         if precision == "float16":
             optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
@@ -243,12 +237,21 @@ class TensorFlowBackend:
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(path.stem + ".pending.npz")
         values = {f"weight_{index}": value for index, value in enumerate(session.state["model"].get_weights())}
+        optimizer = session.state["optimizer"]
+        optimizer_variables = getattr(optimizer, "variables", ())
+        optimizer_variables = optimizer_variables() if callable(optimizer_variables) else optimizer_variables
+        optimizer_values = {
+            f"optimizer_{index}": variable.numpy()
+            for index, variable in enumerate(optimizer_variables)
+        }
         stream_state = session.data_source.state() if session.data_source is not None else {}
         payload = {
             **metadata,
             **stream_state,
             "task_type": session.state["task_type"],
+            "optimizer_count": len(optimizer_values),
             **values,
+            **optimizer_values,
         }
         np.savez(pending, **payload)
         for attempt in range(6):
@@ -272,5 +275,21 @@ class TensorFlowBackend:
             if any(left.shape != right.shape for left, right in zip(weights, model.get_weights(), strict=False)):
                 raise ValueError("Checkpoint model shape несовместим с текущим run")
             model.set_weights(weights)
+            if "optimizer_count" in saved:
+                optimizer = session.state["optimizer"]
+                expected_count = int(np.asarray(saved["optimizer_count"]).item())
+                builder = getattr(optimizer, "build", None)
+                if callable(builder):
+                    builder(model.trainable_variables)
+                optimizer_variables = getattr(optimizer, "variables", ())
+                optimizer_variables = optimizer_variables() if callable(optimizer_variables) else optimizer_variables
+                optimizer_variables = list(optimizer_variables)
+                if len(optimizer_variables) != expected_count:
+                    raise ValueError("Checkpoint optimizer state is incompatible with TensorFlow backend")
+                for index, variable in enumerate(optimizer_variables):
+                    key = f"optimizer_{index}"
+                    if key not in saved or tuple(saved[key].shape) != tuple(variable.shape):
+                        raise ValueError("Checkpoint optimizer state is incompatible with TensorFlow backend")
+                    variable.assign(saved[key])
             if session.data_source is not None and "stream_rows_consumed" in saved:
                 session.data_source.restore_rows(int(saved["stream_rows_consumed"]))

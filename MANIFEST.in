@@ -5,11 +5,11 @@ recursive-include examples *.py
 recursive-include scripts *.py
 include scripts/install_powershell_module.ps1
 recursive-include powershell *.psm1 *.psd1
-recursive-include assets/brand *.png *.svg
-recursive-include benchmarks/cpu *.md *.py *.json
+recursive-include assets/brand *.png *.svg *.gif
 recursive-include constraints *.txt
 recursive-include native *.cpp *.h *.txt *.md *.zig *.f90
-recursive-include sdks *.h *.c *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.rs *.toml *.lock *.md *.swift *.rb *.txt
+recursive-include sdks *.h *.c *.hpp *.cpp *.cs *.csproj *.props *.go *.mod *.java *.rs *.toml *.lock *.md *.txt
+prune docs/internal
 prune .kernelyra
 prune native/build
 global-exclude __pycache__ *.py[cod] *.sqlite3 *.sqlite3-wal *.sqlite3-shm *.log *.exe *.pdb

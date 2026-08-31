@@ -26,15 +26,26 @@ MAX_FOLDER_FILES = 100_000
 _GROUP_HINT = re.compile(r"(?:^|[_\-])(group|user|account|customer|session|conversation|document|device)(?:$|[_\-])", re.I)
 
 
-def _split_for_index(index: int) -> str:
+def _split_for_index(
+    index: int,
+    *,
+    seed: int = 42,
+    validation_percent: int = 15,
+    test_percent: int = 15,
+) -> str:
     """Stable train/validation/test split with good distribution and no RAM index."""
-    value = (index + 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF
+    if not 0 <= validation_percent <= 95 or not 0 <= test_percent <= 95:
+        raise DatasetError("validation_percent and test_percent must be between 0 and 95")
+    if validation_percent + test_percent > 95:
+        raise DatasetError("validation_percent + test_percent must leave at least 5% for training")
+    value = (int(index) ^ int(seed)) + 0x9E3779B97F4A7C15
+    value &= 0xFFFFFFFFFFFFFFFF
     value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
     value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
     bucket = (value ^ (value >> 31)) % 100
-    if bucket < 15:
+    if bucket < validation_percent:
         return "validation"
-    if bucket < 30:
+    if bucket < validation_percent + test_percent:
         return "test"
     return "train"
 
@@ -261,7 +272,23 @@ def _native_numeric_spec(
         return None
 
 
-def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, Any]:
+def build_stream_spec(
+    path: str | Path,
+    target: str | None = None,
+    *,
+    split_seed: int = 42,
+    validation_percent: int = 15,
+    test_percent: int = 15,
+    group_column: str | None = None,
+) -> dict[str, Any]:
+    """Build a bounded streaming contract with caller-controlled split rules."""
+    split_seed = int(split_seed)
+    validation_percent = int(validation_percent)
+    test_percent = int(test_percent)
+    if not 0 <= validation_percent <= 95 or not 0 <= test_percent <= 95:
+        raise DatasetError("validation_percent and test_percent must be between 0 and 95")
+    if validation_percent + test_percent > 95:
+        raise DatasetError("validation_percent + test_percent must leave at least 5% for training")
     source = Path(path).expanduser().resolve()
     if source.is_dir():
         files = _folder_sources(source)
@@ -286,7 +313,13 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
             str(base["encoding"]),
             str(base["delimiter"]),
         )
-        if native_spec is not None:
+        if (
+            native_spec is not None
+            and group_column is None
+            and split_seed == 42
+            and validation_percent == 15
+            and test_percent == 15
+        ):
             return native_spec
         size_bytes = source.stat().st_size
     else:
@@ -309,8 +342,19 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
     )
     if not selected_target or selected_target not in columns:
         raise DatasetError("Target column was not found")
-    context_column = _context_column(columns, selected_target)
-    context_planner = ContextChunkPlanner(seed=42) if context_column else None
+    requested_context = str(group_column).strip() if group_column is not None else None
+    if requested_context and (requested_context == selected_target or requested_context not in columns):
+        raise DatasetError("group_column must name a non-target streaming dataset column")
+    context_column = requested_context or _context_column(columns, selected_target)
+    context_planner = (
+        ContextChunkPlanner(
+            seed=split_seed,
+            validation_percent=validation_percent,
+            test_percent=test_percent,
+        )
+        if context_column
+        else None
+    )
     # A context key is a split boundary, not a learning signal.  Keeping it as
     # a hashed categorical feature would let a model memorise identities while
     # the splitter is trying to protect their held-out evaluation.
@@ -338,7 +382,12 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
         split = (
             context_planner.split_for(str(row.get(context_column, "")))
             if context_planner is not None and context_column is not None
-            else _split_for_index(row_count)
+            else _split_for_index(
+                row_count,
+                seed=split_seed,
+                validation_percent=validation_percent,
+                test_percent=test_percent,
+            )
         )
         split_records[split] += 1
         row_count += 1
@@ -363,6 +412,26 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
         consume(row)
     for row in rows:
         consume(row)
+    # Streaming evaluation is built eagerly and needs enough rows to form a
+    # stable bounded validation and test view.  Report an actionable problem
+    # while inspecting the source instead of failing later from a worker.
+    required_evaluation_rows = 8
+    insufficient_splits = [
+        name
+        for name in ("validation", "test")
+        if split_records[name] < required_evaluation_rows
+    ]
+    if insufficient_splits:
+        joined = ", ".join(insufficient_splits)
+        context_hint = (
+            " Add more distinct values to the group column or choose different split percentages."
+            if context_column
+            else " Add records or choose different split percentages."
+        )
+        raise DatasetError(
+            f"Configured split has fewer than {required_evaluation_rows} rows in: {joined}."
+            + context_hint
+        )
     if len(target_unique) == 2:
         task = TaskType.BINARY_CLASSIFICATION.value
     elif not target_numeric:
@@ -399,6 +468,10 @@ def build_stream_spec(path: str | Path, target: str | None = None) -> dict[str, 
         **base,
         "target": selected_target,
         "context_column": context_column,
+        "split_seed": split_seed,
+        "validation_percent": validation_percent,
+        "test_percent": test_percent,
+        "train_percent": 100 - validation_percent - test_percent,
         "split_strategy": "context" if context_column else "stable_record_hash",
         "columns": columns,
         "feature_columns": feature_columns,
@@ -431,7 +504,26 @@ class StreamingTabularSource:
         self.rows_consumed = 0
         context_column = self.spec.get("context_column")
         self._context_column = str(context_column) if context_column else None
-        self._context_planner = ContextChunkPlanner(seed=42) if self._context_column else None
+        self._context_planner = (
+            ContextChunkPlanner(
+                seed=int(self.spec.get("split_seed", self.seed)),
+                validation_percent=int(self.spec.get("validation_percent", 15)),
+                test_percent=int(self.spec.get("test_percent", 15)),
+            )
+            if self._context_column
+            else None
+        )
+        self._target_column = str(self.spec["target"])
+        self._task_type = str(self.spec["task_type"])
+        self._numeric_columns = tuple(str(column) for column in self.spec["numeric_columns"])
+        self._categorical_columns = tuple(str(column) for column in self.spec["categorical_columns"])
+        self._means = self.spec["means"]
+        self._stds = self.spec["stds"]
+        self._hash_buckets = int(self.spec["hash_buckets"])
+        self._feature_count = len(self._numeric_columns) + len(self._categorical_columns) * self._hash_buckets
+        self._class_indices = {
+            str(label): index for index, label in enumerate(self.spec.get("classes", ()))
+        }
         self._iterator = self._training_rows()
         self._executor = (
             ThreadPoolExecutor(max_workers=self.data_workers, thread_name_prefix="kernelyra-data")
@@ -452,34 +544,40 @@ class StreamingTabularSource:
     def _split(self, index: int, row: Mapping[str, str]) -> str:
         if self._context_column is not None and self._context_planner is not None:
             return self._context_planner.split_for(str(row.get(self._context_column, "")))
-        return _split_for_index(index)
+        return _split_for_index(
+            index,
+            seed=int(self.spec.get("split_seed", self.seed)),
+            validation_percent=int(self.spec.get("validation_percent", 15)),
+            test_percent=int(self.spec.get("test_percent", 15)),
+        )
 
     def _encode(self, row: Mapping[str, str]) -> tuple[np.ndarray, float]:
-        result: list[float] = []
-        means = self.spec["means"]
-        stds = self.spec["stds"]
-        for column in self.spec["numeric_columns"]:
+        result = (
+            np.zeros(self._feature_count, dtype=np.float32)
+            if self._categorical_columns
+            else np.empty(self._feature_count, dtype=np.float32)
+        )
+        for index, column in enumerate(self._numeric_columns):
             value = _number(row.get(column))
-            result.append(0.0 if value is None else (value - float(means[column])) / float(stds[column]))
-        buckets = int(self.spec["hash_buckets"])
-        for column in self.spec["categorical_columns"]:
-            encoded = [0.0] * buckets
+            result[index] = 0.0 if value is None else (value - float(self._means[column])) / float(self._stds[column])
+        offset = len(self._numeric_columns)
+        for column in self._categorical_columns:
             raw = str(row.get(column, ""))
-            bucket = int.from_bytes(hashlib.blake2b(raw.encode("utf-8"), digest_size=8).digest(), "little") % buckets
-            encoded[bucket] = 1.0
-            result.extend(encoded)
-        target = str(row[self.spec["target"]]).strip()
-        if self.spec["task_type"] == TaskType.REGRESSION.value:
+            bucket = int.from_bytes(hashlib.blake2b(raw.encode("utf-8"), digest_size=8).digest(), "little") % self._hash_buckets
+            result[offset + bucket] = 1.0
+            offset += self._hash_buckets
+        target = str(row[self._target_column]).strip()
+        if self._task_type == TaskType.REGRESSION.value:
             number = _number(target)
             if number is None:
                 raise DatasetError("Regression target contains a non-numeric value")
             y = number
         else:
-            try:
-                y = float(self.spec["classes"].index(target))
-            except ValueError:
+            class_index = self._class_indices.get(target)
+            if class_index is None:
                 raise DatasetError("Target class changed after streaming inspection") from None
-        return np.asarray(result, dtype=np.float32), y
+            y = float(class_index)
+        return result, y
 
     def _training_rows(self) -> Generator[dict[str, str], None, None]:
         while True:

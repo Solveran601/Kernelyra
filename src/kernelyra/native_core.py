@@ -19,6 +19,18 @@ COMPONENT_ZIG_MEMORY = 1
 COMPONENT_FORTRAN_NUMERIC = 2
 COMPONENT_RUST_POLICY = 4
 COMPONENT_ALL = 7
+EXECUTION_C_ABI = 1
+EXECUTION_CPP_DISPATCH = 2
+EXECUTION_RUST_POLICY = 4
+EXECUTION_FORTRAN_NUMERIC = 8
+EXECUTION_ZIG_MEMORY = 16
+_EXECUTION_ENGINES = (
+    (EXECUTION_C_ABI, "c-abi"),
+    (EXECUTION_CPP_DISPATCH, "cpp-dispatch"),
+    (EXECUTION_RUST_POLICY, "rust-policy"),
+    (EXECUTION_FORTRAN_NUMERIC, "fortran-numeric"),
+    (EXECUTION_ZIG_MEMORY, "zig-memory"),
+)
 _TASK_IDS = {
     TaskType.BINARY_CLASSIFICATION.value: 0,
     TaskType.MULTICLASS_CLASSIFICATION.value: 1,
@@ -132,14 +144,118 @@ def native_core_status() -> dict[str, Any]:
         }
 
 
+def native_core_self_test() -> dict[str, Any]:
+    """Run a small deterministic, in-process native ABI self-test.
+
+    It allocates a few float32 values in memory only. It does not build a
+    binary, inspect user data, create a workspace, or train a model. Optional
+    ABI additions are reported as skipped for older compatible cores.
+    """
+    status = native_core_status()
+    if not status["available"]:
+        return {
+            "ok": False,
+            "available": False,
+            "path": status["path"],
+            "checks": [],
+            "diagnostic": status["diagnostic"],
+        }
+
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, passed: bool, *, detail: str, optional: bool = False) -> None:
+        checks.append({"name": name, "ok": bool(passed), "optional": optional, "detail": detail})
+
+    try:
+        core = NativeCore(status["path"])
+        values = np.array([1.5, -2.0, 0.0, 4.0], dtype=np.float32)
+        add("finite_guard", core.all_finite(values), detail="finite float32 values were accepted")
+        expected_norm = math.sqrt(float(np.dot(values, values)))
+        measured_norm = core.l2_norm(values)
+        add(
+            "l2_norm",
+            math.isclose(measured_norm, expected_norm, rel_tol=2e-5, abs_tol=2e-5),
+            detail=f"value={measured_norm:.7g}",
+        )
+        clipped = core.clip(values, 1.0)
+        add(
+            "clip",
+            bool(np.array_equal(clipped, np.array([1.0, -1.0, 0.0, 1.0], dtype=np.float32))),
+            detail="clamp boundary preserved",
+        )
+        copied = np.zeros_like(values)
+        core.copy_f32(copied, values)
+        add("copy", bool(np.array_equal(copied, values)), detail="float32 copy matched source")
+        split = core.split_for_context(123456789, seed=42)
+        add("context_split", split in {0, 1, 2}, detail=f"split={split}")
+        chunk = core.next_chunk_size(4096, 1024, 768, 1280, 0, 42)
+        add("chunk_policy", 1 <= chunk <= 1280, detail=f"chunk={chunk}")
+
+        if core._extended_fortran_numeric_available:
+            softmax = core.softmax(np.array([0.0, 1.0, 2.0], dtype=np.float32))
+            add(
+                "fortran_softmax",
+                bool(
+                    np.isfinite(softmax).all()
+                    and math.isclose(float(softmax.sum()), 1.0, rel_tol=2e-5, abs_tol=2e-5)
+                ),
+                detail="finite probabilities sum to one",
+                optional=True,
+            )
+        else:
+            checks.append(
+                {"name": "fortran_softmax", "ok": None, "optional": True, "detail": "not present in this compatible core"}
+            )
+
+        if core._extended_zig_memory_available:
+            memory = np.zeros(4, dtype=np.float32)
+            core.fill_f32(memory, 2.0)
+            core.scale_f32(memory, .5)
+            core.add_f32(memory, np.ones(4, dtype=np.float32))
+            total, maximum = core.memory_summary(memory)
+            add(
+                "zig_memory",
+                bool(
+                    np.array_equal(memory, np.full(4, 2.0, dtype=np.float32))
+                    and total == 8.0
+                    and maximum == 2.0
+                ),
+                detail=f"sum={total:.7g}, max_abs={maximum:.7g}",
+                optional=True,
+            )
+        else:
+            checks.append(
+                {"name": "zig_memory", "ok": None, "optional": True, "detail": "not present in this compatible core"}
+            )
+    except (NativeCoreError, OSError, ValueError) as error:
+        checks.append({"name": "load_or_abi", "ok": False, "optional": False, "detail": f"{type(error).__name__}: {error}"})
+
+    passed = all(item["ok"] is not False for item in checks)
+    return {
+        "ok": passed,
+        "available": True,
+        "path": status["path"],
+        "version": status["version"],
+        "checks": checks,
+        "diagnostic": None if passed else "At least one native ABI check failed; rebuild or replace this binary.",
+    }
+
+
 def build_native_core(output_dir: str | Path | None = None) -> Path:
     """Build the Windows C ABI with Rust policy, Fortran math and Zig memory kernels."""
     root = Path(__file__).resolve().parents[2]
-    source = root / "native" / "bridge" / "cpp" / "core_abi.cpp"
-    policy_source = root / "native" / "bridge" / "cpp" / "context_policy.cpp"
+    source = root / "native" / "core" / "cpp" / "abi" / "core_abi.cpp"
+    policy_source = root / "native" / "core" / "cpp" / "policy" / "context_policy.cpp"
+    c_sources = (
+        root / "native" / "core" / "c" / "contract" / "checked_arithmetic.c",
+        root / "native" / "core" / "c" / "contract" / "matrix_contract.c",
+        root / "native" / "core" / "c" / "contract" / "batch_contract.c",
+    )
+    c_public_headers = root / "native" / "core" / "c" / "include"
+    c_contract_headers = root / "native" / "core" / "c" / "contract"
     headers = root / "native" / "include"
-    if not source.is_file() or not policy_source.is_file():
-        raise NativeCoreError("Native C++ ABI bridge source is not present in this installation")
+    if not source.is_file() or not policy_source.is_file() or not all(item.is_file() for item in c_sources):
+        raise NativeCoreError("Native C/C++ ABI bridge sources are not present in this installation")
     destination = Path(output_dir) if output_dir else Path(__file__).resolve().parent / "native_bin"
     destination.mkdir(parents=True, exist_ok=True)
     system = platform.system().lower()
@@ -164,23 +280,23 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
         fortran_sources = [
             root / "native" / "core" / "fortran" / name
             for name in (
-                "numeric_constants.f90",
-                "numeric_precision.f90",
-                "numeric_moments.f90",
-                "activation_softmax.f90",
-                "loss_binary.f90",
-                "loss_multiclass.f90",
-                "loss_regression.f90",
-                "gradient_layout.f90",
-                "workspace_kernels.f90",
-                "vector_kernels.f90",
-                "gradient_kernels.f90",
-                "optimizer_clip.f90",
-                "training_guard.f90",
-                "training_state.f90",
-                "matrix_scores.f90",
-                "multiclass_training.f90",
-                "training_kernels.f90",
+                "numerics/numeric_constants.f90",
+                "numerics/numeric_precision.f90",
+                "numerics/numeric_moments.f90",
+                "numerics/activation_softmax.f90",
+                "numerics/loss_binary.f90",
+                "numerics/loss_multiclass.f90",
+                "numerics/loss_regression.f90",
+                "training/gradient_layout.f90",
+                "training/workspace_kernels.f90",
+                "numerics/vector_kernels.f90",
+                "training/gradient_kernels.f90",
+                "numerics/optimizer_clip.f90",
+                "training/training_guard.f90",
+                "training/training_state.f90",
+                "training/matrix_scores.f90",
+                "training/multiclass_training.f90",
+                "training/training_kernels.f90",
             )
         ]
         rust_manifest = root / "native" / "core" / "rust" / "Cargo.toml"
@@ -289,6 +405,10 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-fopenmp",
                 "-I",
                 str(headers),
+                "-I",
+                str(c_public_headers),
+                "-I",
+                str(c_contract_headers),
                 *defines,
                 "-shared",
                 "-static",
@@ -296,6 +416,7 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
                 "-static-libstdc++",
                 str(source),
                 str(policy_source),
+                *(str(item) for item in c_sources),
                 *(str(item) for item in objects),
                 "-o",
                 str(output),
@@ -339,8 +460,13 @@ def build_native_core(output_dir: str | Path | None = None) -> Path:
             "-fPIC",
             "-I",
             str(headers),
+            "-I",
+            str(c_public_headers),
+            "-I",
+            str(c_contract_headers),
             str(source),
             str(policy_source),
+            *(str(item) for item in c_sources),
             "-o",
             str(output),
         ]
@@ -484,6 +610,15 @@ class NativeCore:
         library.kr_rust_mix_u64.restype = ctypes.c_uint64
         library.kr_rust_split_for_key.argtypes = [ctypes.c_uint64, ctypes.c_uint32, ctypes.c_uint32]
         library.kr_rust_split_for_key.restype = ctypes.c_uint32
+        self._seeded_context_split_available = hasattr(library, "kr_rust_split_for_key_seeded")
+        if self._seeded_context_split_available:
+            library.kr_rust_split_for_key_seeded.argtypes = [
+                ctypes.c_uint64,
+                ctypes.c_uint64,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+            ]
+            library.kr_rust_split_for_key_seeded.restype = ctypes.c_uint32
         library.kr_rust_next_chunk_size.argtypes = [
             ctypes.c_size_t,
             ctypes.c_size_t,
@@ -590,6 +725,10 @@ class NativeCore:
                 ctypes.POINTER(ctypes.c_float),
             ]
             library.kr_model_train_steps.restype = ctypes.c_int
+        self._model_execution_mask_available = hasattr(library, "kr_model_execution_mask")
+        if self._model_execution_mask_available:
+            library.kr_model_execution_mask.argtypes = [ctypes.c_void_p]
+            library.kr_model_execution_mask.restype = ctypes.c_uint32
         library.kr_model_predict.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(ctypes.c_float),
@@ -703,9 +842,46 @@ class NativeCore:
     def components(self) -> str:
         return str(self.library.kr_core_components().decode("ascii", "replace"))
 
-    def split_for_context(self, context_key: int, validation_percent: int = 15, test_percent: int = 15) -> int:
-        """Assign one stable context key to train (0), validation (1) or test (2)."""
-        split = int(self.library.kr_rust_split_for_key(context_key, validation_percent, test_percent))
+    def split_for_context(
+        self,
+        context_key: int,
+        validation_percent: int = 15,
+        test_percent: int = 15,
+        *,
+        seed: int = 42,
+    ) -> int:
+        """Assign one context key to train (0), validation (1) or test (2).
+
+        A new seeded ABI is used when present.  The old ABI remains usable for
+        installed cores: its native mixer provides the same deterministic
+        calculation, while non-default seeds are mixed into the key here.
+        ``42`` keeps the historical default assignment unchanged.
+        """
+        validation_percent = int(validation_percent)
+        test_percent = int(test_percent)
+        if (
+            validation_percent < 0
+            or test_percent < 0
+            or validation_percent > 95
+            or test_percent > 95
+            or validation_percent + test_percent > 95
+        ):
+            raise NativeCoreError("Invalid Rust split policy percentages")
+        effective_seed = (int(seed) ^ 42) & ((1 << 64) - 1)
+        if self._seeded_context_split_available:
+            split = int(
+                self.library.kr_rust_split_for_key_seeded(
+                    context_key,
+                    effective_seed,
+                    validation_percent,
+                    test_percent,
+                )
+            )
+        elif effective_seed:
+            bucket = int(self.library.kr_rust_mix_u64(context_key ^ effective_seed)) % 100
+            split = 1 if bucket < validation_percent else 2 if bucket < validation_percent + test_percent else 0
+        else:
+            split = int(self.library.kr_rust_split_for_key(context_key, validation_percent, test_percent))
         if split > 2:
             raise NativeCoreError("Invalid Rust split policy percentages")
         return split
@@ -763,15 +939,18 @@ class NativeCore:
         text: str,
         *,
         minimum_bytes: int = 768,
-        target_bytes: int = 1_536,
+        target_bytes: int = 0,
         maximum_bytes: int = 2_048,
         overlap_bytes: int = 256,
     ) -> list[dict[str, Any]]:
         """Plan UTF-8-safe text spans with explicit reusable context prefixes.
 
         Each returned item has a ``content`` range that partitions the input
-        exactly once, plus a ``context`` prefix. A future language-model
-        trainer must mask this prefix from loss; v5 does not yet ship one.
+        exactly once, plus a ``context`` prefix.  ``target_bytes=0`` selects
+        the Rust-native automatic target inside the caller's minimum/maximum
+        bounds; a positive value selects a manual target.  A future
+        language-model trainer must mask this prefix from loss; this method
+        prepares text only and does not train a language model itself.
         """
         if not self._text_chunk_available:
             raise NativeCoreError("This native core does not include text chunk planning")
@@ -1342,7 +1521,12 @@ class NativeModel:
         return float(loss.value)
 
     def train_random_steps(self, x: np.ndarray, y: np.ndarray, batch_size: int, steps: int) -> float:
-        """Run deterministic random-batch updates inside one native ABI call."""
+        """Run deterministic random-batch updates in one native ABI call.
+
+        The native hot loop calculates and returns loss for the final update;
+        intermediate updates retain all numerical guards without paying for
+        redundant loss reductions.
+        """
         rows = np.ascontiguousarray(x, dtype=np.float32)
         targets = np.ascontiguousarray(y, dtype=np.float32).reshape(-1)
         if rows.ndim != 2 or rows.shape != (len(targets), self.features) or len(targets) == 0:
@@ -1388,6 +1572,21 @@ class NativeModel:
         if not ok:
             raise self.core.error()
         return float(loss_value.value)
+
+    def execution_trace(self) -> dict[str, Any]:
+        """Return engines that have actually participated for this model handle.
+
+        The result is cumulative: an engine appears only after the native call
+        path has executed it.  Older cores report an empty trace instead of a
+        guessed value.
+        """
+        if not self.handle or not self.core._model_execution_mask_available:
+            return {"mask": 0, "engines": []}
+        mask = int(self.core.library.kr_model_execution_mask(self.handle))
+        return {
+            "mask": mask,
+            "engines": [name for bit, name in _EXECUTION_ENGINES if mask & bit],
+        }
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         rows = np.ascontiguousarray(x, dtype=np.float32)

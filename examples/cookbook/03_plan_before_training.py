@@ -6,7 +6,6 @@ with AutoTrainer(".kernelyra-plan") as trainer:
         "data/train.csv",
         target="label",
         execution="cpu",
-        algorithm_pack="careful",
         cpu=50,
         ram=45,
         threads=2,

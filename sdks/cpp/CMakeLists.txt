@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.16)
 project(kernelyra_client LANGUAGES CXX)
 
 add_library(kernelyra_client INTERFACE)
-target_include_directories(kernelyra_client INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(kernelyra_client INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<INSTALL_INTERFACE:include/kernelyra>)
 target_compile_features(kernelyra_client INTERFACE cxx_std_17)
 install(TARGETS kernelyra_client EXPORT KernelyraTargets)
 install(FILES kernelyra_client.hpp kernelyra_process.hpp DESTINATION include/kernelyra)

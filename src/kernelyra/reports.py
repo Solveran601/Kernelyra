@@ -40,7 +40,7 @@ def build_experiment_report(workspace: Workspace, run_id: str) -> dict[str, Any]
             "command": (
                 f'kernelyra --workspace "{workspace.root}" train "{dataset.path}" '
                 f'--target "{dataset.target}" --backend {run.backend} --execution {run.execution} '
-                f"--pack {run.algorithm_pack} --cpu {run.cpu} --ram {run.ram} --gpu {run.gpu} "
+                f"--cpu {run.cpu} --ram {run.ram} --gpu {run.gpu} "
                 f"--threads {run.threads} --seed {run.seed} --max-steps {run.max_steps}"
             ),
             "dataset_sha256": dataset.sha256,

@@ -173,13 +173,41 @@ class DatasetManager:
             copied.unlink(missing_ok=True)
             raise
 
-    def attach_path(self, path: str | Path, target: str | None = None) -> DatasetInfo:
-        """Register a file or folder by reference without copying or materializing it."""
+    def attach_path(
+        self,
+        path: str | Path,
+        target: str | None = None,
+        *,
+        split_seed: int = 42,
+        validation_percent: int = 15,
+        test_percent: int = 15,
+        group_column: str | None = None,
+    ) -> DatasetInfo:
+        """Register a source by reference with an explicit, reproducible split contract."""
         source = Path(path).expanduser().resolve()
-        spec = build_stream_spec(source, target)
+        spec = build_stream_spec(
+            source,
+            target,
+            split_seed=split_seed,
+            validation_percent=validation_percent,
+            test_percent=test_percent,
+            group_column=group_column,
+        )
         fingerprint = str(spec["fingerprint"])
         target_key = hashlib.sha256(str(spec["target"]).encode("utf-8")).hexdigest()[:4]
-        dataset_id = f"stream_{fingerprint[:12]}_{target_key}"
+        split_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "seed": spec.get("split_seed", split_seed),
+                    "validation": spec.get("validation_percent", validation_percent),
+                    "test": spec.get("test_percent", test_percent),
+                    "context": spec.get("context_column"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()[:8]
+        dataset_id = f"stream_{fingerprint[:12]}_{target_key}_{split_key}"
         existing = self.storage.get_dataset(dataset_id)
         if existing:
             return existing
@@ -204,7 +232,7 @@ class DatasetManager:
                 {"kind": "standardize", "columns": spec["numeric_columns"]},
                 {"kind": "feature_hash", "columns": spec["categorical_columns"], "buckets": spec["hash_buckets"]},
             ),
-            split_seed=42,
+            split_seed=int(spec.get("split_seed", split_seed)),
             warnings=("External source files must remain available and unchanged",),
             created_at=created_at,
             ingestor_name=f"stream-{spec['reader_engine']}",
@@ -215,6 +243,11 @@ class DatasetManager:
             target=str(spec["target"]),
             records_estimate=int(spec["records"]),
             feature_count=int(spec["features"]),
+            seed=int(spec.get("split_seed", split_seed)),
+            validation_percent=int(spec.get("validation_percent", validation_percent)),
+            test_percent=int(spec.get("test_percent", test_percent)),
+            group_column=str(spec["context_column"]) if spec.get("context_column") else None,
+            streaming=True,
         )
         info = DatasetInfo(
             id=dataset_id,

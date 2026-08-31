@@ -34,25 +34,6 @@ impl ExecutionTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AlgorithmPack {
-    Careful,
-    Balanced,
-    Throughput,
-    Maximum,
-}
-
-impl AlgorithmPack {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Careful => "careful",
-            Self::Balanced => "balanced",
-            Self::Throughput => "throughput",
-            Self::Maximum => "maximum",
-        }
-    }
-}
-
 impl Config {
     pub fn auto(target: &str) -> Self {
         if target.is_empty() {
@@ -88,13 +69,6 @@ impl Config {
     }
     pub fn hybrid(self) -> Self {
         self.execution(ExecutionTarget::Hybrid)
-    }
-    pub fn algorithm_pack(self, value: AlgorithmPack) -> Self {
-        self.set("algorithm_pack", value.as_str())
-    }
-    /// Legacy persisted profiles remain readable; use `algorithm_pack` for new code.
-    pub fn profile(self, value: &str) -> Self {
-        self.set("profile", value)
     }
     pub fn goal(self, value: f64) -> Self {
         self.set("target_metric", value)
@@ -313,7 +287,7 @@ impl Drop for Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{AlgorithmPack, Config, ExecutionTarget};
+    use super::{Config, ExecutionTarget};
 
     #[test]
     fn auto_without_target_preserves_inference() {
@@ -328,14 +302,12 @@ mod tests {
     }
 
     #[test]
-    fn typed_execution_and_pack_use_protocol_vocabulary() {
+    fn typed_execution_uses_protocol_vocabulary() {
         let values = Config::default()
             .execution(ExecutionTarget::Cpu)
-            .algorithm_pack(AlgorithmPack::Throughput)
             .threads(8)
             .into_map();
         assert_eq!(values["execution"], "cpu");
-        assert_eq!(values["algorithm_pack"], "throughput");
         assert_eq!(values["threads"], 8);
     }
 

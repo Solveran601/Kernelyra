@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 170" role="img" aria-label="Kernelyra top wave ornament">
+  <defs>
+    <linearGradient id="orange" x1="0" x2="1">
+      <stop stop-color="#ff9417" stop-opacity=".16"/>
+      <stop offset=".5" stop-color="#ff9417" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#ff9417" stop-opacity=".16"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" x2="1">
+      <stop stop-color="#20242a" stop-opacity=".08"/>
+      <stop offset=".5" stop-color="#20242a" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#20242a" stop-opacity=".08"/>
+    </linearGradient>
+  </defs>
+  <path d="M0 111C155 42 286 44 441 111s286 69 441 0 286-67 558 0" fill="none" stroke="url(#ink)" stroke-width="2"/>
+  <path d="M0 127c156-69 287-67 442 0s286 69 441 0 286-67 557 0" fill="none" stroke="url(#orange)" stroke-width="4"/>
+  <path d="M0 145c155-69 286-67 441 0s286 69 441 0 286-67 558 0" fill="none" stroke="url(#ink)" stroke-width="2"/>
+</svg>

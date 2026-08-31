@@ -11,7 +11,6 @@ import numpy as np
 class BackendConfig:
     x: np.ndarray | None
     y: np.ndarray | None
-    profile: str
     seed: int
     task_type: str = "binary_classification"
     validation_fraction: float = .15

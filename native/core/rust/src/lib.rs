@@ -7,11 +7,21 @@
 // namespace is global.  This crate contains no unsafe operations or pointers.
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[path = "policy/adaptive.rs"]
 mod adaptive;
+#[path = "batch/plan.rs"]
+mod batch_plan;
+#[path = "policy/chunks.rs"]
 mod chunks;
+#[path = "policy/hash.rs"]
 mod hash;
+#[path = "policy/signature.rs"]
 mod signature;
+#[path = "batch/sampler.rs"]
+mod sampler;
+#[path = "policy/split.rs"]
 mod split;
+#[path = "policy/text_chunks.rs"]
 mod text_chunks;
 
 #[unsafe(export_name = "kr_rust_policy_mix_u64")]
@@ -27,6 +37,18 @@ pub extern "C" fn kr_rust_split_for_key(
     test_percent: u32,
 ) -> u32 {
     split::for_context(group_key, validation_percent, test_percent)
+}
+
+/// Seeded variant kept separate from the original ABI entry point so existing
+/// clients remain binary-compatible.
+#[unsafe(export_name = "kr_rust_policy_split_for_key_seeded")]
+pub extern "C" fn kr_rust_split_for_key_seeded(
+    group_key: u64,
+    seed: u64,
+    validation_percent: u32,
+    test_percent: u32,
+) -> u32 {
+    split::for_context_seeded(group_key, seed, validation_percent, test_percent)
 }
 
 /// Return a bounded variable chunk size for context-safe stream scheduling.
@@ -73,6 +95,56 @@ pub extern "C" fn kr_rust_next_adaptive_chunk_size(
     )
 }
 
+/// Fill a native mini-batch index buffer without allocating. The C++ bridge
+/// passes its persistent RNG state, so sampling remains deterministic across
+/// Python, C and C++ callers and does not create a Python-side index array.
+///
+/// # Safety
+/// `state` and `output` must be valid writable pointers. `output` must point
+/// to at least `requested` `usize` elements.
+#[unsafe(export_name = "kr_rust_policy_sample_indices")]
+pub unsafe extern "C" fn kr_rust_sample_indices(
+    rows: usize,
+    requested: usize,
+    state: *mut u64,
+    output: *mut usize,
+) -> usize {
+    if rows == 0 || requested == 0 || state.is_null() || output.is_null() {
+        return 0;
+    }
+    let rng_state = unsafe { &mut *state };
+    let destination = unsafe { core::slice::from_raw_parts_mut(output, requested) };
+    sampler::fill_indices(rows, rng_state, destination);
+    requested
+}
+
+/// Validate native minibatch dimensions without allocating. The bridge uses
+/// this before resizing persistent C++ buffers, so a malformed request cannot
+/// reach pointer arithmetic in the gathering kernels.
+///
+/// # Safety
+/// `output_values` must point to writable `usize` storage.
+#[unsafe(export_name = "kr_rust_policy_plan_batch")]
+pub unsafe extern "C" fn kr_rust_plan_batch(
+    source_rows: usize,
+    features: usize,
+    requested_rows: usize,
+    output_values: *mut usize,
+    output_bytes: *mut usize,
+) -> usize {
+    if output_values.is_null() || output_bytes.is_null() {
+        return 0;
+    }
+    let Some(plan) = batch_plan::plan(source_rows, features, requested_rows) else {
+        return 0;
+    };
+    unsafe {
+        *output_values = plan.values;
+        *output_bytes = plan.values_bytes;
+    }
+    plan.rows
+}
+
 /// Classify an untrusted file prefix without parsing or allocating from it.
 ///
 /// # Safety
@@ -100,6 +172,22 @@ mod tests {
     }
 
     #[test]
+    fn seeded_split_is_reproducible_and_changes_the_assignment_space() {
+        assert_eq!(
+            kr_rust_split_for_key_seeded(42, 19, 15, 15),
+            kr_rust_split_for_key_seeded(42, 19, 15, 15)
+        );
+        assert_eq!(
+            kr_rust_split_for_key_seeded(42, 0, 15, 15),
+            kr_rust_split_for_key(42, 15, 15)
+        );
+        assert!((0..10_000).any(|key| {
+            kr_rust_split_for_key_seeded(key, 19, 15, 15)
+                != kr_rust_split_for_key_seeded(key, 0, 15, 15)
+        }));
+    }
+
+    #[test]
     fn chunks_are_bounded_and_finish_with_a_short_tail() {
         assert!((256..=768).contains(&kr_rust_next_chunk_size(10_000, 512, 256, 768, 3, 99)));
         assert_eq!(kr_rust_next_chunk_size(19, 512, 256, 768, 3, 99), 19);
@@ -121,5 +209,27 @@ mod tests {
         assert_eq!(signature::classify(b"\x89PNG\r\n\x1a\npixels"), signature::PNG);
         assert_eq!(signature::classify(b"a,b\n1,2\n"), signature::DELIMITED_TEXT);
         assert_eq!(signature::classify(&[0; 32]), signature::UNKNOWN);
+    }
+
+    #[test]
+    fn sampler_is_deterministic_and_bounded() {
+        let mut first_state = 7;
+        let mut second_state = 7;
+        let mut first = [0_usize; 32];
+        let mut second = [0_usize; 32];
+        sampler::fill_indices(17, &mut first_state, &mut first);
+        sampler::fill_indices(17, &mut second_state, &mut second);
+        assert_eq!(first, second);
+        assert!(first.iter().all(|index| *index < 17));
+    }
+
+    #[test]
+    fn sampler_repairs_the_degenerate_zero_state() {
+        let mut state = 0;
+        let mut values = [0_usize; 8];
+        sampler::fill_indices(97, &mut state, &mut values);
+        assert_ne!(state, 0);
+        assert!(values.iter().all(|index| *index < 97));
+        assert!(values.iter().any(|index| *index != 0));
     }
 }

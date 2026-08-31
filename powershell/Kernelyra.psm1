@@ -18,17 +18,19 @@ function Get-KernelyraInvocation {
 function Invoke-KernelyraJson {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
         [string]$Workspace,
         [Parameter(Mandatory)]
         [string[]]$Arguments
     )
 
-    $resolvedWorkspace = [System.IO.Path]::GetFullPath($Workspace)
     $invocation = @(Get-KernelyraInvocation)
     $runner = $invocation[0]
     $runnerArgs = if ($invocation.Count -gt 1) { $invocation[1..($invocation.Count - 1)] } else { @() }
-    $result = & $runner @runnerArgs --workspace $resolvedWorkspace --json @Arguments 2>&1
+    $workspaceArguments = @()
+    if ($Workspace) {
+        $workspaceArguments = @("--workspace", [System.IO.Path]::GetFullPath($Workspace))
+    }
+    $result = & $runner @runnerArgs @workspaceArguments --json @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Kernelyra command failed: $($result | Out-String)"
     }
@@ -51,7 +53,7 @@ function Test-KernelyraDataset {
     param(
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Path,
         [string]$Target,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     $arguments = @("dataset", "doctor", $Path)
@@ -65,18 +67,36 @@ function Get-KernelyraPlan {
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Dataset,
         [string]$Target,
         [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "auto",
-        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
+        [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
+        [ValidateSet("none", "last", "best")] [string]$CheckpointResume = "none",
+        [ValidateSet("none", "best", "last")] [string]$CheckpointFinal = "none",
+        [ValidateSet("none", "best")] [string]$CheckpointRollback = "none",
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
+        [string]$GroupColumn,
+        [ValidateRange(128,262144)] [int]$ChunkTargetRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMinimumRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMaximumRecords,
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
-        [ValidateRange(1,256)] [int]$Threads = 1,
-        [string]$Workspace = "."
+        [ValidateRange(1,256)] [Nullable[int]]$Threads,
+        [ValidateRange(0,64)] [Nullable[int]]$DataWorkers,
+        [ValidateRange(0,32)] [Nullable[int]]$Prefetch,
+        [string]$Workspace
     )
 
-    $arguments = @("plan", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
+    $arguments = @("plan", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu)
     if ($Target) { $arguments += @("--target", $Target) }
+    if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
+    if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
+    if ($PSBoundParameters.ContainsKey("Threads")) { $arguments += @("--threads", $Threads) }
+    if ($PSBoundParameters.ContainsKey("DataWorkers")) { $arguments += @("--data-workers", $DataWorkers) }
+    if ($PSBoundParameters.ContainsKey("Prefetch")) { $arguments += @("--prefetch", $Prefetch) }
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
 
@@ -86,20 +106,38 @@ function Start-KernelyraTraining {
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Dataset,
         [string]$Target,
         [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "auto",
-        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateSet("auto", "native", "numpy", "torch", "tensorflow")]
         [string]$Backend = "auto",
+        [ValidateSet("auto", "memory", "stream")] [string]$DataMode = "auto",
+        [ValidateSet("none", "last", "best")] [string]$CheckpointResume = "none",
+        [ValidateSet("none", "best", "last")] [string]$CheckpointFinal = "none",
+        [ValidateSet("none", "best")] [string]$CheckpointRollback = "none",
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
+        [string]$GroupColumn,
+        [ValidateRange(128,262144)] [int]$ChunkTargetRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMinimumRecords,
+        [ValidateRange(1,262144)] [int]$ChunkMaximumRecords,
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
-        [ValidateRange(1,256)] [int]$Threads = 1,
-        [int]$MaxSteps = 1400,
+        [ValidateRange(1,256)] [Nullable[int]]$Threads,
+        [ValidateRange(0,64)] [Nullable[int]]$DataWorkers,
+        [ValidateRange(0,32)] [Nullable[int]]$Prefetch,
+        [ValidateRange(1,10000000)] [int]$MaxSteps = 1400,
         [int]$Seed = 42,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
-    $arguments = @("train", $Dataset, "--execution", $Execution, "--pack", $Pack, "--backend", $Backend, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
+    $arguments = @("train", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--max-steps", $MaxSteps, "--seed", $Seed)
     if ($Target) { $arguments += @("--target", $Target) }
+    if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
+    if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
+    if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
+    if ($PSBoundParameters.ContainsKey("Threads")) { $arguments += @("--threads", $Threads) }
+    if ($PSBoundParameters.ContainsKey("DataWorkers")) { $arguments += @("--data-workers", $DataWorkers) }
+    if ($PSBoundParameters.ContainsKey("Prefetch")) { $arguments += @("--prefetch", $Prefetch) }
     if ($PSCmdlet.ShouldProcess($Dataset, "Train Kernelyra model")) {
         Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
     }
@@ -109,25 +147,28 @@ function Watch-KernelyraRun {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)] [string]$RunId,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
-    $resolvedWorkspace = [System.IO.Path]::GetFullPath($Workspace)
     $invocation = @(Get-KernelyraInvocation)
     $runner = $invocation[0]
     $runnerArgs = if ($invocation.Count -gt 1) { $invocation[1..($invocation.Count - 1)] } else { @() }
-    & $runner @runnerArgs --workspace $resolvedWorkspace run watch $RunId
+    $workspaceArguments = @()
+    if ($Workspace) {
+        $workspaceArguments = @("--workspace", [System.IO.Path]::GetFullPath($Workspace))
+    }
+    & $runner @runnerArgs @workspaceArguments run watch $RunId
 }
 
 function Get-KernelyraExecution {
     [CmdletBinding()]
-    param([string]$Workspace = ".")
+    param([string]$Workspace)
     Invoke-KernelyraJson -Workspace $Workspace -Arguments @("execution")
 }
 
 function Get-KernelyraNativeStatus {
     [CmdletBinding()]
-    param([string]$Workspace = ".")
+    param([string]$Workspace)
 
     Invoke-KernelyraJson -Workspace $Workspace -Arguments @("native", "status")
 }
@@ -136,15 +177,14 @@ function Get-KernelyraCpuTuning {
     [CmdletBinding()]
     param(
         [ValidateSet("auto", "cpu", "hybrid")] [string]$Execution = "cpu",
-        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Pack = "balanced",
         [ValidateRange(32,1000000000)] [int]$Records = 100000,
         [ValidateRange(1,1000000)] [int]$Features = 32,
         [ValidateRange(1,1000000)] [int]$BatchSize = 64,
         [switch]$Streaming,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
-    $arguments = @("tune", "--execution", $Execution, "--pack", $Pack, "--records", $Records, "--features", $Features, "--batch-size", $BatchSize)
+    $arguments = @("tune", "--execution", $Execution, "--records", $Records, "--features", $Features, "--batch-size", $BatchSize)
     if ($Streaming) { $arguments += "--streaming" }
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
@@ -154,7 +194,7 @@ function Get-KernelyraDataContract {
     param(
         [Parameter(Mandatory, Position = 0, ValueFromPipelineByPropertyName)] [Alias("FullName")] [string]$Path,
         [string]$Target,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     $arguments = @("dataset", "doctor", $Path)
@@ -162,97 +202,11 @@ function Get-KernelyraDataContract {
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
 
-function Get-KernelyraPack {
-    [CmdletBinding()]
-    param(
-        [Parameter(Position = 0)] [string]$Name,
-        [string]$Workspace = "."
-    )
-
-    if ($Name) {
-        return Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "show", $Name)
-    }
-    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "list")
-    return $result.packs
-}
-
-function Get-KernelyraPackAlgorithm {
-    [CmdletBinding()]
-    param([string]$Workspace = ".")
-
-    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "algorithms")
-    return $result.algorithms
-}
-
-function Get-KernelyraPackTablePath {
-    [CmdletBinding()]
-    param([string]$Workspace = ".")
-
-    $result = Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "path")
-    return $result.path
-}
-
-function Copy-KernelyraPack {
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory, Position = 0)]
-        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Name,
-        [Alias("From")]
-        [ValidatePattern("^[a-z0-9][a-z0-9._-]{0,63}$")] [string]$Base = "balanced",
-        [string]$Label,
-        [string]$Workspace = "."
-    )
-
-    $arguments = @("packs", "clone", $Name, "--from", $Base)
-    if ($Label) { $arguments += @("--label", $Label) }
-    if ($PSCmdlet.ShouldProcess($Name, "Create custom Kernelyra pack from $Base")) {
-        Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
-    }
-}
-
-function Add-KernelyraPackAlgorithm {
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [Parameter(Mandatory, Position = 0)] [string]$Name,
-        [Parameter(Mandatory, Position = 1)] [string]$Algorithm,
-        [string]$Workspace = "."
-    )
-
-    if ($PSCmdlet.ShouldProcess($Name, "Add Kernelyra pack algorithm $Algorithm")) {
-        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "add-algorithm", $Name, $Algorithm)
-    }
-}
-
-function Remove-KernelyraPackAlgorithm {
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "Medium")]
-    param(
-        [Parameter(Mandatory, Position = 0)] [string]$Name,
-        [Parameter(Mandatory, Position = 1)] [string]$Algorithm,
-        [string]$Workspace = "."
-    )
-
-    if ($PSCmdlet.ShouldProcess($Name, "Remove Kernelyra pack algorithm $Algorithm")) {
-        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "remove-algorithm", $Name, $Algorithm)
-    }
-}
-
-function Remove-KernelyraPack {
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = "High")]
-    param(
-        [Parameter(Mandatory, Position = 0)] [string]$Name,
-        [string]$Workspace = "."
-    )
-
-    if ($PSCmdlet.ShouldProcess($Name, "Delete custom Kernelyra pack")) {
-        Invoke-KernelyraJson -Workspace $Workspace -Arguments @("packs", "delete", $Name)
-    }
-}
-
 function Get-KernelyraRunStatus {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)] [string]$RunId,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     Invoke-KernelyraJson -Workspace $Workspace -Arguments @("run", "get", $RunId)
@@ -263,15 +217,17 @@ function Get-KernelyraChunkPlan {
     param(
         [Parameter(Mandatory, Position = 0)] [int]$Records,
         [int]$TargetRecords = 4096,
-        [string]$Workspace = "."
+        [ValidateRange(0,95)] [int]$ValidationPercent = 15,
+        [ValidateRange(0,95)] [int]$TestPercent = 15,
+        [string]$Workspace
     )
-    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("chunk-plan", $Records, "--target-records", $TargetRecords)
+    Invoke-KernelyraJson -Workspace $Workspace -Arguments @("chunk-plan", $Records, "--target-records", $TargetRecords, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent)
 }
 
 function Invoke-Kernelyra {
     [CmdletBinding()]
     param(
-        [string]$Workspace = ".",
+        [string]$Workspace,
         [Parameter(Mandatory, ValueFromRemainingArguments)] [string[]]$Arguments
     )
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $Arguments
@@ -281,7 +237,7 @@ function Resume-KernelyraRun {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory, Position = 0)] [string]$RunId,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     if ($PSCmdlet.ShouldProcess($RunId, "Resume Kernelyra run")) {
@@ -294,7 +250,7 @@ function Export-KernelyraModel {
     param(
         [Parameter(Mandatory, Position = 0)] [string]$RunId,
         [Parameter(Mandatory)] [string]$Output,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     if ($PSCmdlet.ShouldProcess($RunId, "Export Kernelyra model")) {
@@ -307,7 +263,7 @@ function Get-KernelyraReport {
     param(
         [Parameter(Mandatory, Position = 0)] [string]$RunId,
         [string]$Output,
-        [string]$Workspace = "."
+        [string]$Workspace
     )
 
     $arguments = @("report", $RunId)
@@ -328,13 +284,6 @@ Export-ModuleMember -Function @(
     "Get-KernelyraNativeStatus",
     "Get-KernelyraCpuTuning",
     "Get-KernelyraDataContract",
-    "Get-KernelyraPack",
-    "Get-KernelyraPackAlgorithm",
-    "Get-KernelyraPackTablePath",
-    "Copy-KernelyraPack",
-    "Add-KernelyraPackAlgorithm",
-    "Remove-KernelyraPackAlgorithm",
-    "Remove-KernelyraPack",
     "Get-KernelyraRunStatus",
     "Get-KernelyraChunkPlan",
     "Invoke-Kernelyra"

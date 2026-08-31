@@ -17,6 +17,8 @@ class BatchPlan:
     applied: int
     safe_min: int
     safe_max: int
+    memory_limit_bytes: int
+    estimated_batch_bytes: int
     risk: str
     requires_confirmation: bool
     warnings: list[str]
@@ -35,7 +37,6 @@ def plan_batch(
     *,
     records: int,
     features: int,
-    profile: str,
     ram_percent: int,
     ram_gb: float,
     mode: str = "auto",
@@ -43,8 +44,6 @@ def plan_batch(
 ) -> BatchPlan:
     if mode not in {"auto", "manual"}:
         raise ConfigurationError("Batch mode must be auto or manual")
-    if profile not in {"eco", "low-memory", "balanced", "performance", "workstation", "custom"}:
-        raise ConfigurationError("Unknown hardware profile")
     validation_size = min(480, max(32, records // 5))
     train_records = max(2, records - validation_size)
     recommended = (
@@ -60,27 +59,24 @@ def plan_batch(
     elif features > 512:
         recommended = max(2, recommended // 2)
 
-    profile_cap = {
-        "eco": 64,
-        "low-memory": 64,
-        "balanced": 256,
-        "performance": 512,
-        # This is only a guard against pathological allocations, not a
-        # workstation throttle. The real ceiling below is derived from RAM,
-        # feature width and the training split.
-        "workstation": 65_536,
-        "custom": 256,
-    }[profile]
+    # The ceiling is derived only from the requested RAM, feature width and
+    # training split. Never raise a small caller-selected RAM limit to an
+    # arbitrary minimum working set.
     ram_percent = max(10, min(95, int(ram_percent)))
     total_bytes = max(1.0, ram_gb) * 1024**3
-    reserve_bytes = max(2 * 1024**3, total_bytes * .05) if profile == "workstation" else 0
+    # Keep a meaningful operating-system reserve on small machines without
+    # making a fixed 2 GiB reservation consume all RAM on a 2-4 GiB host.
+    reserve_bytes = min(2 * 1024**3, max(256 * 1024**2, total_bytes * .25))
     requested_bytes = total_bytes * (ram_percent / 100)
-    safety_factor = .80 if profile == "workstation" else .35
-    usable_bytes = max(256 * 1024**2, min(requested_bytes, total_bytes - reserve_bytes) * safety_factor)
-    bytes_per_sample = max(2048, features * 4 * 12)
+    safety_factor = .35
+    budget_after_reserve = max(1.0, min(requested_bytes, total_bytes - reserve_bytes))
+    usable_bytes = max(1.0, budget_after_reserve * safety_factor)
+    # Input, gradients and temporary backend vectors. The estimate is
+    # intentionally backend-agnostic and becomes visible in the plan.
+    bytes_per_sample = max(128, features * 4 * 12)
     memory_cap = _power_floor(int(usable_bytes / bytes_per_sample))
-    dataset_cap = _power_floor(max(2, train_records // 2))
-    safe_max = max(2, min(profile_cap, memory_cap, dataset_cap))
+    dataset_cap = _power_floor(max(2, train_records))
+    safe_max = max(2, min(memory_cap, dataset_cap))
     recommended = min(safe_max, _power_floor(recommended))
     safe_min = min(safe_max, max(2, recommended // 2))
     warnings: list[str] = []
@@ -93,7 +89,7 @@ def plan_batch(
         requested_value = int(requested)
         if requested_value < 1:
             raise ConfigurationError("Batch size must be positive")
-        hard_max = min(65_536 if profile == "workstation" else 4096, train_records)
+        hard_max = train_records
         applied = max(1, min(requested_value, hard_max))
         if requested_value > hard_max:
             warnings.append(
@@ -119,7 +115,8 @@ def plan_batch(
         )
     reason = (
         f"{records} rows, {features} features, {train_records} training rows; "
-        f"profile {profile} and RAM limit {ram_percent}%"
+        f"automatic policy and RAM limit {ram_percent}% "
+        f"({int(budget_after_reserve)} usable bytes before safety margin)"
     )
     return BatchPlan(
         records,
@@ -131,6 +128,8 @@ def plan_batch(
         applied,
         safe_min,
         safe_max,
+        int(budget_after_reserve),
+        bytes_per_sample,
         risk,
         risk == "high",
         warnings,

@@ -8,9 +8,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.."))
-$pythonPath = if ($Python) { $Python } elseif ($env:KERNELYRA_PYTHON) { $env:KERNELYRA_PYTHON } else { Join-Path $repoRoot ".venv\Scripts\python.exe" }
+$pythonPath = if ($Python) { $Python } elseif ($env:KERNELYRA_PYTHON) { $env:KERNELYRA_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop).Source }
 if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
-    throw "Python with Kernelyra was not found: $pythonPath. Create .venv and run '.\.venv\Scripts\python -m pip install -e .', or pass -Python."
+    throw "Python with Kernelyra was not found: $pythonPath. Run 'python -m pip install .' or pass -Python."
 }
 
 $env:KERNELYRA_PYTHON = $pythonPath

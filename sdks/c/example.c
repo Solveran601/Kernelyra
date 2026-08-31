@@ -5,7 +5,6 @@
 static int mock_transport(const char *request, char *response, size_t capacity, void *context) {
     const char *required[] = {
         "\"execution\":\"cpu\"",
-        "\"algorithm_pack\":\"throughput\"",
         "\"threads\":8"
     };
     size_t index;
@@ -22,7 +21,6 @@ int main(void) {
     kernelyra_run_options options = {0};
     options.target = "label";
     options.execution = KERNELYRA_EXECUTION_CPU;
-    options.algorithm_pack = KERNELYRA_PACK_THROUGHPUT;
     options.cpu = 90;
     options.ram = 80;
     options.threads = 8;

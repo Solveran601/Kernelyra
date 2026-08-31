@@ -51,6 +51,7 @@ class BackendRegistry:
                     "task_types": list(getattr(factory, "task_types", ("binary_classification",))),
                     "metrics": list(getattr(factory, "metrics", ("loss", "accuracy"))),
                     "export_formats": list(getattr(factory, "export_formats", ("run-manifest-json",))),
+                    "execution_targets": list(getattr(factory, "execution_targets", ("cpu",))),
                     "available": available,
                     "diagnostic": diagnostic
                     if name == "native"

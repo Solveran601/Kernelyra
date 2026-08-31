@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .agent_policy import AgentPolicy
@@ -39,18 +39,21 @@ from .models import DatasetInfo, RunConfig, RunInfo
 from .security import LOOPBACK_HOSTS, ensure_agent_secret, ensure_user_secret, validate_daemon_bind
 from .workspace import Workspace, batch_plan_for
 
-VERSION = "0.5.0a3"
+VERSION = "0.7.0b1"
 
 
 class BatchPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     dataset: str = "demo"
-    profile: str = "auto"
     batch_mode: str = "auto"
     batch_size: int | None = None
     ram: int = Field(default=35, ge=10, le=95)
 
 
 class RunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = "new-classifier"
     dataset: str = "demo"
     backend: str = "tensorflow"
@@ -58,9 +61,7 @@ class RunRequest(BaseModel):
     architecture: str = "auto"
     model_format: str = "auto"
     mode: str = "Новая модель"
-    profile: str = "auto"
     execution: str = "auto"
-    algorithm_pack: str = "balanced"
     priority: str = "normal"
     target_score: float = .92
     batch_mode: str = "auto"
@@ -86,6 +87,10 @@ class RunRequest(BaseModel):
     degradation_patience: int = Field(default=3, ge=1, le=100)
     early_stopping_patience: int = Field(default=18, ge=1, le=10_000)
     target_patience: int = Field(default=3, ge=1, le=100)
+    checkpoint_policy: dict[str, Any] = Field(default_factory=dict)
+    data_contract: dict[str, Any] = Field(default_factory=dict)
+    split_policy: dict[str, Any] = Field(default_factory=dict)
+    chunk_policy: dict[str, Any] = Field(default_factory=dict)
     start: bool = True
 
 
@@ -464,7 +469,7 @@ def create_app(
     @app.post("/api/batch/plan")
     @app.post("/api/v1/batch/plan")
     def batch_plan(body: BatchPlanRequest) -> dict[str, Any]:
-        plan = batch_plan_for(workspace, body.dataset, body.profile, body.batch_mode, body.batch_size, body.ram)
+        plan = batch_plan_for(workspace, body.dataset, body.batch_mode, body.batch_size, body.ram)
         return {"dataset": body.dataset, **plan.to_dict()}
 
     def create_run_record(body: RunRequest, *, allow_start: bool) -> dict[str, Any]:
@@ -481,9 +486,7 @@ def create_app(
                 model_format=body.model_format,
                 name=body.name,
                 mode=body.mode,
-                profile=body.profile,
                 execution=body.execution,
-                algorithm_pack=body.algorithm_pack,
                 priority=body.priority,
                 target_metric=body.target_score,
                 batch_mode=body.batch_mode,
@@ -509,6 +512,10 @@ def create_app(
                 degradation_patience=body.degradation_patience,
                 early_stopping_patience=body.early_stopping_patience,
                 target_patience=body.target_patience,
+                checkpoint_policy=body.checkpoint_policy,
+                data_contract=body.data_contract,
+                split_policy=body.split_policy,
+                chunk_policy=body.chunk_policy,
             )
         )
         return (handle.start() if allow_start and body.start else handle.info).to_dict()
@@ -520,9 +527,7 @@ def create_app(
 
     def run_logs_payload(run_id: str, limit: int = 100) -> list[dict[str, Any]]:
         workspace.runs.get(run_id)
-        events = workspace.storage.recent_actions(limit=max(100, min(1000, int(limit) * 5)))
-        selected = [event for event in events if event.get("payload", {}).get("run_id") == run_id]
-        return selected[: max(1, min(500, int(limit)))]
+        return workspace.storage.actions_for_run(run_id, max(1, min(500, int(limit))))
 
     def export_run_payload(run_id: str) -> dict[str, Any]:
         run = workspace.runs.get(run_id).info
@@ -538,7 +543,6 @@ def create_app(
                 "objective": run.objective,
                 "architecture": run.architecture,
                 "model_format": run.model_format,
-                "profile": run.profile,
                 "priority": run.priority,
                 "target_score": run.target_score,
                 "batch_mode": run.batch_mode,

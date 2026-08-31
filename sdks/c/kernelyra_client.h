@@ -19,17 +19,12 @@ typedef struct {
 #define KERNELYRA_EXECUTION_AUTO "auto"
 #define KERNELYRA_EXECUTION_CPU "cpu"
 #define KERNELYRA_EXECUTION_HYBRID "hybrid"
-#define KERNELYRA_PACK_CAREFUL "careful"
-#define KERNELYRA_PACK_BALANCED "balanced"
-#define KERNELYRA_PACK_THROUGHPUT "throughput"
-#define KERNELYRA_PACK_MAXIMUM "maximum"
 
 typedef struct {
     const char *target;
     const char *task;
     const char *backend;
     const char *execution;
-    const char *algorithm_pack;
     unsigned cpu;
     unsigned ram;
     unsigned gpu;
@@ -113,7 +108,6 @@ static inline int kernelyra_run_params(const char *dataset, const kernelyra_run_
             kernelyra_append_string_field(params, capacity, &used, &first, "task", options->task) != 0 ||
             kernelyra_append_string_field(params, capacity, &used, &first, "backend", options->backend) != 0 ||
             kernelyra_append_string_field(params, capacity, &used, &first, "execution", options->execution) != 0 ||
-            kernelyra_append_string_field(params, capacity, &used, &first, "algorithm_pack", options->algorithm_pack) != 0 ||
             kernelyra_append_unsigned_field(params, capacity, &used, &first, "cpu", options->cpu) != 0 ||
             kernelyra_append_unsigned_field(params, capacity, &used, &first, "ram", options->ram) != 0 ||
             kernelyra_append_unsigned_field(params, capacity, &used, &first, "gpu", options->gpu) != 0 ||

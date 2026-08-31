@@ -133,9 +133,7 @@ class RunConfig:
     model_format: str = "auto"
     name: str = "new-classifier"
     mode: str = "Новая модель"
-    profile: str = "auto"
     execution: str = "auto"
-    algorithm_pack: str = "balanced"
     priority: str = "normal"
     target_metric: float = 0.92
     batch_mode: str = "auto"
@@ -161,6 +159,7 @@ class RunConfig:
     degradation_patience: int = 3
     early_stopping_patience: int = 18
     target_patience: int = 3
+    checkpoint_policy: dict[str, Any] = field(default_factory=dict)
     data_contract: dict[str, Any] = field(default_factory=dict)
     split_policy: dict[str, Any] = field(default_factory=dict)
     chunk_policy: dict[str, Any] = field(default_factory=dict)
@@ -177,9 +176,7 @@ class RunInfo:
     architecture: str
     model_format: str
     mode: str
-    profile: str
     execution: str
-    algorithm_pack: str
     priority: str
     target_score: float
     batch_mode: str
@@ -209,6 +206,7 @@ class RunInfo:
     degradation_patience: int = 3
     early_stopping_patience: int = 18
     target_patience: int = 3
+    checkpoint_policy: dict[str, Any] = field(default_factory=dict)
     data_contract: dict[str, Any] = field(default_factory=dict)
     split_policy: dict[str, Any] = field(default_factory=dict)
     chunk_policy: dict[str, Any] = field(default_factory=dict)

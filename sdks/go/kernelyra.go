@@ -33,7 +33,6 @@ type Config struct {
 	Backend         string         `json:"backend,omitempty"`
 	Architecture    string         `json:"architecture,omitempty"`
 	ModelFormat     string         `json:"model_format,omitempty"`
-	Profile         string         `json:"profile,omitempty"`
 	BatchSize       int            `json:"batch_size,omitempty"`
 	AcceptBatchRisk bool           `json:"accept_batch_risk,omitempty"`
 	MaxSteps        int            `json:"max_steps,omitempty"`
@@ -78,7 +77,6 @@ func (c *Config) WithTask(value string) *Config    { c.Task = value; c.mark("tas
 func (c *Config) WithBackend(value string) *Config { c.Backend = value; c.mark("backend"); return c }
 func (c *Config) WithArchitecture(value string) *Config { c.Architecture = value; c.mark("architecture"); return c }
 func (c *Config) WithModelFormat(value string) *Config { c.ModelFormat = value; c.mark("model_format"); return c }
-func (c *Config) WithProfile(value string) *Config { c.Profile = value; c.mark("profile"); return c }
 func (c *Config) WithGoal(value float64) *Config {
 	c.TargetMetric = value
 	c.mark("target_metric")
@@ -147,7 +145,7 @@ func (c *Config) params() (map[string]any, error) {
 	}
 	values := map[string]any{
 		"target": c.Target, "task": c.Task, "backend": c.Backend, "architecture": c.Architecture,
-		"model_format": c.ModelFormat, "profile": c.Profile,
+		"model_format": c.ModelFormat,
 		"batch_size": c.BatchSize, "accept_batch_risk": c.AcceptBatchRisk,
 		"max_steps": c.MaxSteps, "target_metric": c.TargetMetric,
 		"cpu": c.CPU, "ram": c.RAM, "gpu": c.GPU, "seed": c.Seed,

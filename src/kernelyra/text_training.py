@@ -81,7 +81,7 @@ def _python_chunk_plan(
     text: str,
     *,
     minimum_bytes: int,
-    target_bytes: int,
+    target_bytes: int | None,
     maximum_bytes: int,
     overlap_bytes: int,
 ) -> list[dict[str, object]]:
@@ -90,10 +90,20 @@ def _python_chunk_plan(
     if not payload:
         return []
     result: list[dict[str, object]] = []
+    if target_bytes is None:
+        if len(payload) <= maximum_bytes or minimum_bytes == maximum_bytes:
+            target = min(len(payload), maximum_bytes)
+        else:
+            span = maximum_bytes - minimum_bytes
+            preferred = minimum_bytes + (span * 2) // 3
+            count = max(1, (len(payload) + preferred - 1) // preferred)
+            target = min(maximum_bytes, max(minimum_bytes, (len(payload) + count - 1) // count))
+    else:
+        target = target_bytes
     start = 0
     while start < len(payload):
         ceiling = _floor_utf8_boundary(payload, min(len(payload), start + maximum_bytes))
-        preferred = _floor_utf8_boundary(payload, min(ceiling, start + target_bytes))
+        preferred = _floor_utf8_boundary(payload, min(ceiling, start + target))
         minimum = _floor_utf8_boundary(payload, min(ceiling, start + minimum_bytes))
         if ceiling <= start:
             raise ValueError("Text chunk byte bounds cannot contain one UTF-8 character")
@@ -129,22 +139,35 @@ def plan_text_for_training(
     text: str,
     *,
     minimum_bytes: int = 512,
-    target_bytes: int = 2048,
+    target_bytes: int | str | None = "auto",
     maximum_bytes: int = 4096,
     overlap_bytes: int = 256,
     core: NativeCore | None = None,
 ) -> list[dict[str, object]]:
     """Plan contiguous UTF-8 chunks with an explicit carried-context prefix.
 
-    The optional Rust-native planner is used when supplied or available.  The
-    fallback has the same loss-boundary contract, but its sentence preferences
-    are intentionally simple and should not be described as a tokenizer.
+    Set ``target_bytes="auto"`` (the default) to let the Rust policy choose a
+    repeatable nominal size inside ``minimum_bytes`` and ``maximum_bytes``.
+    The planner then moves individual boundaries to newline/sentence ends,
+    which deliberately makes chunk sizes variable without losing or repeating
+    training content.  Pass a positive integer for a manual nominal size.
+
+    This is opt-in preparation only: normal tabular training does not invoke
+    it.  For multi-gigabyte JSONL or Telegram exports, use
+    :func:`iter_conversation_chunks` to stream whole messages first, then plan
+    each selected text payload if a downstream trainer needs byte spans.
     """
     if not isinstance(text, str):
         raise TypeError("text must be str")
-    minimum, target, maximum, overlap = map(int, (minimum_bytes, target_bytes, maximum_bytes, overlap_bytes))
-    if not (1 <= minimum <= target <= maximum <= 16 * 1024 * 1024):
-        raise ValueError("Require 1 <= minimum_bytes <= target_bytes <= maximum_bytes <= 16 MiB")
+    minimum, maximum, overlap = map(int, (minimum_bytes, maximum_bytes, overlap_bytes))
+    automatic = target_bytes is None or target_bytes == "auto"
+    if isinstance(target_bytes, str) and not automatic:
+        raise ValueError('target_bytes must be a positive integer, None, or "auto"')
+    target = 0 if automatic else int(target_bytes)
+    if not (1 <= minimum <= maximum <= 2 * 1024 * 1024):
+        raise ValueError("Require 1 <= minimum_bytes <= maximum_bytes <= 2 MiB")
+    if not automatic and not minimum <= target <= maximum:
+        raise ValueError("Manual target_bytes must satisfy minimum_bytes <= target_bytes <= maximum_bytes")
     if not 0 <= overlap < maximum:
         raise ValueError("overlap_bytes must be non-negative and smaller than maximum_bytes")
     selected = core
@@ -170,7 +193,7 @@ def plan_text_for_training(
     return _python_chunk_plan(
         text,
         minimum_bytes=minimum,
-        target_bytes=target,
+        target_bytes=None if automatic else target,
         maximum_bytes=maximum,
         overlap_bytes=overlap,
     )
@@ -181,7 +204,7 @@ def prepare_masked_text_examples(
     *,
     tokenizer: ByteTokenizer | None = None,
     minimum_bytes: int = 512,
-    target_bytes: int = 2048,
+    target_bytes: int | str | None = "auto",
     maximum_bytes: int = 4096,
     overlap_bytes: int = 256,
     core: NativeCore | None = None,

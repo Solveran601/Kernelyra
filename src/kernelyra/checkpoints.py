@@ -10,12 +10,33 @@ from typing import Any
 
 from .errors import RunError
 
+_CHECKPOINT_KINDS = {"none", "best", "last"}
+_CHECKPOINT_FINAL_KINDS = {"best", "last"}
+
+
+def resolve_checkpoint_policy(policy: dict[str, Any] | None = None) -> dict[str, str]:
+    """Validate an explicitly chosen persistent-checkpoint policy for one run."""
+    values = {"resume": "none", "final": "none", "rollback": "none", **(policy or {})}
+    resume = str(values["resume"]).strip().lower()
+    final = str(values["final"]).strip().lower()
+    rollback = str(values["rollback"]).strip().lower()
+    if resume not in _CHECKPOINT_KINDS:
+        raise RunError("checkpoint resume must be 'none', 'last' or 'best'")
+    if final not in _CHECKPOINT_KINDS:
+        raise RunError("checkpoint final must be 'none', 'best' or 'last'")
+    if rollback not in {"none", "best"}:
+        raise RunError("checkpoint rollback must be 'none' or 'best'")
+    return {"resume": resume, "final": final, "rollback": rollback}
+
 
 class CheckpointManager:
     FORMAT_VERSION = 1
 
     def __init__(self, root: Path):
         self.root = root
+
+    def _ensure_root(self) -> None:
+        """Create checkpoint storage only immediately before an opted-in write."""
         self.root.mkdir(parents=True, exist_ok=True)
 
     def best_path(self, run_id: str) -> Path:
@@ -23,6 +44,21 @@ class CheckpointManager:
 
     def last_path(self, run_id: str) -> Path:
         return self.root / f"{run_id}.last.npz"
+
+    def path_for(self, run_id: str, kind: str) -> Path:
+        if kind == "best":
+            return self.best_path(run_id)
+        if kind == "last":
+            return self.last_path(run_id)
+        raise RunError("checkpoint kind must be 'best' or 'last'")
+
+    def resume_path(self, run_id: str, kind: str = "last") -> Path | None:
+        """Return the requested durable state, with a safe fallback to best."""
+        selected = self.path_for(run_id, kind)
+        if selected.is_file():
+            return selected
+        fallback = self.best_path(run_id)
+        return fallback if fallback.is_file() else None
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -37,6 +73,7 @@ class CheckpointManager:
         return path.with_suffix(path.suffix + ".json")
 
     def record(self, path: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_root()
         if path.parent.resolve() != self.root.resolve() or not path.is_file():
             raise RunError("Checkpoint path is outside managed storage")
         payload = {
@@ -75,6 +112,7 @@ class CheckpointManager:
         return {str(key): value for key, value in metadata.items()}
 
     def promote(self, source: Path, destination: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_root()
         if source.parent.resolve() != self.root.resolve() or destination.parent.resolve() != self.root.resolve():
             raise RunError("Checkpoint promotion escaped managed storage")
         pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.pending")

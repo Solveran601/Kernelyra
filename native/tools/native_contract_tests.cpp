@@ -1,5 +1,6 @@
 #include "kernelyra_core.h"
 #include "kernelyra_policy.h"
+#include "execution_guard.h"
 
 #include <cmath>
 #include <cstdint>
@@ -149,10 +150,30 @@ int main() {
     return 1;
   }
 
+  kr_c_batch_contract core_batch{};
+  if (!expect(kr_c_core_batch_contract_make(12U, 8U, 4U, &core_batch) == 1,
+              "C core validates a bounded random minibatch") ||
+      !expect(core_batch.dataset_elements == 96U && core_batch.batch_elements == 32U &&
+                  core_batch.dataset_bytes == 384U && core_batch.batch_bytes == 128U &&
+                  core_batch.working_bytes == 512U,
+              "C core publishes overflow-checked float32 workspace requirements") ||
+      !expect(kr_c_core_batch_contract_make(12U, 8U, 13U, &core_batch) == 0,
+              "C core rejects a batch that exceeds its source table")) {
+    return 1;
+  }
+  kr_c_model_contract model_contract{};
+  if (!expect(kr_c_core_model_contract_make(8U, 3U, &model_contract) == 1 &&
+                  model_contract.weight_elements == 24U && model_contract.weight_bytes == 96U,
+              "C core publishes exact overflow-checked model storage") ||
+      !expect(kr_c_core_model_contract_make(
+                  std::numeric_limits<size_t>::max(), 2U, &model_contract) == 0,
+              "C core rejects an overflowing model table")) {
+    return 1;
+  }
+
   kr_c_execution_request request{};
   request.abi_version = KR_ABI_VERSION;
   request.execution = KR_C_EXECUTION_CPU;
-  request.algorithm_pack = KR_C_PACK_THROUGHPUT;
   request.cpu_percent = 90U;
   request.ram_percent = 75U;
   request.gpu_percent = 0U;
@@ -220,11 +241,22 @@ int main() {
       return 1;
     }
   }
+  float bulk_loss = 0.0F;
+  const bool bulk_multiclass_ok =
+      kr_model_train_random_steps(model, multiclass_x, multiclass_y, 6U, 4U, 80U, &bulk_loss) == 1;
   std::vector<float> probabilities(18U);
   const bool prediction_ok = kr_model_predict(model, multiclass_x, 6U, probabilities.data(), probabilities.size()) == 1;
   kr_model_destroy(model);
-  if (!expect(prediction_ok && std::isfinite(final_loss) && final_loss < first_loss,
-              "Fortran multiclass core reduces loss and predicts")) {
+  if (!expect(bulk_multiclass_ok && prediction_ok && std::isfinite(final_loss) &&
+                  std::isfinite(bulk_loss) && final_loss < first_loss,
+              "Fortran multiclass core returns the final bulk loss and predicts")) {
+    return 1;
+  }
+  kr_model_config oversized = multiclass;
+  oversized.features = 1000000U;
+  oversized.classes = 65536U;
+  if (!expect(kr_model_create(&oversized) == nullptr,
+              "C++ rejects a model shape before attempting an unsafe allocation")) {
     return 1;
   }
 
@@ -252,10 +284,24 @@ int main() {
   std::vector<float> binary_probabilities(6U);
   const bool binary_prediction_ok =
       kr_model_predict(binary_model, binary_x, 6U, binary_probabilities.data(), binary_probabilities.size()) == 1;
+  float random_loss = 0.0F;
+  const bool random_batch_ok =
+      kr_model_train_random_step(binary_model, binary_x, binary_y, 6U, 4U, &random_loss) == 1;
+  const uint32_t random_execution = kr_model_execution_mask(binary_model);
   kr_model_destroy(binary_model);
   if (!expect(binary_prediction_ok && std::isfinite(final_loss) && final_loss < first_loss &&
                   binary_probabilities.front() < 0.5F && binary_probabilities.back() > 0.5F,
               "tiled Fortran binary core learns a separable batch")) {
+    return 1;
+  }
+  if (!expect(random_batch_ok && std::isfinite(random_loss) &&
+                  (random_execution & (KR_EXECUTION_C_ABI | KR_EXECUTION_CPP_DISPATCH |
+                                       KR_EXECUTION_RUST_POLICY | KR_EXECUTION_FORTRAN_NUMERIC |
+                                       KR_EXECUTION_ZIG_MEMORY)) ==
+                      (KR_EXECUTION_C_ABI | KR_EXECUTION_CPP_DISPATCH |
+                       KR_EXECUTION_RUST_POLICY | KR_EXECUTION_FORTRAN_NUMERIC |
+                       KR_EXECUTION_ZIG_MEMORY),
+              "random batch composes C, C++, Rust, Zig and Fortran")) {
     return 1;
   }
   void* guarded_binary_model = kr_model_create(&binary);
@@ -281,6 +327,39 @@ int main() {
   if (!expect(guarded_update == 0 && guarded_export == 1 && weights_after == weights_before &&
                   bias_after == bias_before,
               "Fortran pre-update guard rejects non-finite batches without changing parameters")) {
+    return 1;
+  }
+
+  kr_model_config overflow_guard{};
+  overflow_guard.abi_version = KR_ABI_VERSION;
+  overflow_guard.task = KR_TASK_BINARY;
+  overflow_guard.features = 1U;
+  overflow_guard.classes = 1U;
+  overflow_guard.learning_rate = std::numeric_limits<float>::max();
+  void* overflow_guard_model = kr_model_create(&overflow_guard);
+  if (!expect(overflow_guard_model != nullptr, "overflow-guard model is created")) return 1;
+  float overflow_weight_before = 0.0F;
+  float overflow_bias_before = 0.0F;
+  if (!expect(kr_model_export(
+                  overflow_guard_model, &overflow_weight_before, 1U, &overflow_bias_before, 1U) == 1,
+              "overflow-guard model is exportable")) {
+    kr_model_destroy(overflow_guard_model);
+    return 1;
+  }
+  const float overflow_x[] = {100.0F};
+  const float overflow_y[] = {
+      (overflow_weight_before * overflow_x[0] + overflow_bias_before) >= 0.0F ? 0.0F : 1.0F};
+  float overflow_loss = 0.0F;
+  float overflow_weight_after = 0.0F;
+  float overflow_bias_after = 0.0F;
+  const bool overflow_rejected =
+      kr_model_train_step(overflow_guard_model, overflow_x, overflow_y, 1U, &overflow_loss) == 0 &&
+      kr_model_export(
+          overflow_guard_model, &overflow_weight_after, 1U, &overflow_bias_after, 1U) == 1;
+  kr_model_destroy(overflow_guard_model);
+  if (!expect(overflow_rejected && overflow_weight_before == overflow_weight_after &&
+                  overflow_bias_before == overflow_bias_after,
+              "Fortran preflight rejects float32-overflowing updates without mutating parameters")) {
     return 1;
   }
 

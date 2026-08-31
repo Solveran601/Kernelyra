@@ -16,6 +16,7 @@ from .splitter import split_arrays
 class NumpyBackend:
     name = "numpy"
     version = "1.0"
+    execution_targets = ("cpu",)
     task_types = tuple(item.value for item in TaskType)
     metrics = (
         "loss",
@@ -70,13 +71,7 @@ class NumpyBackend:
             )
             all_y = y
         test_size = len(test_y)
-        learning_rate = config.learning_rate or {
-            "eco": .025,
-            "low-memory": .025,
-            "balanced": .035,
-            "performance": .04,
-            "workstation": .04,
-        }.get(config.profile, .035)
+        learning_rate = config.learning_rate or .035
         state: dict[str, Any] = {
             "task_type": config.task_type,
             "learning_rate": learning_rate,

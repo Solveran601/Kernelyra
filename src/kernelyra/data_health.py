@@ -24,6 +24,8 @@ _GROUP_HINT = re.compile(r"(?:^|[_\-])(group|user|account|customer|session|conve
 _ID_HINT = re.compile(r"(?:^|[_\-])(id|uuid|guid|key)(?:$|[_\-])", re.I)
 _MAX_COLUMNS = 512
 _MAX_CLASSES = 64
+_TEXT_TABLE_SUFFIXES = {".csv", ".tsv", ".jsonl", ".ndjson"}
+_RECORD_ESTIMATE_BYTES = 8 * 1024 * 1024
 
 
 def _text(value: Any) -> str:
@@ -48,6 +50,45 @@ def _rows(inspection: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in preview if isinstance(row, Mapping)]
 
 
+def estimate_records(path: str | Path, inspection: Mapping[str, Any]) -> int:
+    """Estimate records through one bounded read using the same rule as planning.
+
+    Routers deliberately return only a small preview.  The doctor and the
+    planner must nevertheless agree on the dataset scale because the result
+    controls batching and the variable context chunks.  For newline-delimited
+    tables this function reads at most 8 MiB; all other formats keep the
+    preview-based estimate supplied by their router.
+    """
+    source = Path(path).expanduser().resolve()
+    shape = inspection.get("shape") or []
+    known = inspection.get("rows") or (shape[0] if len(shape) >= 2 else None)
+    if known:
+        return max(1, int(known))
+
+    sampled = max(1, int(inspection.get("sampled_rows") or 1))
+    preview = _rows(inspection)
+    preview_bytes = max(1, sum(len(str(row)) for row in preview))
+    size = int(inspection.get("bytes") or (source.stat().st_size if source.exists() else 0))
+    fallback = max(sampled, int(size / max(1, preview_bytes / max(1, len(preview)))))
+    if not source.is_file() or source.suffix.lower() not in _TEXT_TABLE_SUFFIXES:
+        return fallback
+
+    sample_size = min(size, _RECORD_ESTIMATE_BYTES)
+    try:
+        with source.open("rb") as handle:
+            prefix = handle.read(sample_size)
+    except OSError:
+        return fallback
+
+    lines = prefix.count(b"\n")
+    if source.suffix.lower() in {".csv", ".tsv"}:
+        lines = max(0, lines - 1)
+    if size <= sample_size:
+        return max(sampled, lines + (1 if prefix and not prefix.endswith(b"\n") else 0))
+    bytes_per_record = sample_size / max(1, lines)
+    return max(sampled, int(size / bytes_per_record))
+
+
 def _issue(code: str, severity: str, message: str, **evidence: Any) -> dict[str, Any]:
     return {"code": code, "severity": severity, "message": message, "evidence": evidence}
 
@@ -66,12 +107,56 @@ def _task_from_inspection(inspection: Mapping[str, Any], target_values: list[str
     return "multiclass_classification"
 
 
-def _split_policy(columns: list[str], task: str | None, *, target: str | None, row_count: int) -> dict[str, Any]:
+def _split_policy(
+    columns: list[str],
+    task: str | None,
+    *,
+    target: str | None,
+    row_count: int,
+    validation_percent: int = 15,
+    test_percent: int = 15,
+    group_column: str | None = None,
+    streaming: bool = False,
+) -> dict[str, Any]:
+    """Resolve one reproducible split contract from schema evidence and overrides.
+
+    The percentages are part of the signed data contract.  A streaming source
+    uses its own stable-record splitter unless it has a context boundary;
+    materialized classification can instead use deterministic stratification.
+    """
+    validation_percent = int(validation_percent)
+    test_percent = int(test_percent)
+    if not 0 <= validation_percent <= 95 or not 0 <= test_percent <= 95:
+        raise ValueError("validation_percent and test_percent must be between 0 and 95")
+    if validation_percent + test_percent > 95:
+        raise ValueError("validation_percent + test_percent must leave at least 5% for training")
     candidates = [column for column in columns if column != target]
     temporal = next((column for column in candidates if _TIME_HINT.search(column)), None)
-    context = next((column for column in candidates if _GROUP_HINT.search(column)), None)
-    if temporal:
-        return {
+    detected_context = next((column for column in candidates if _GROUP_HINT.search(column)), None)
+    requested_context = str(group_column).strip() if group_column is not None else None
+    if requested_context and requested_context not in candidates:
+        raise ValueError("group_column must name a non-target dataset column")
+    context = requested_context or detected_context
+    if requested_context:
+        policy = {
+            "strategy": "context",
+            "execution_strategy": "context",
+            "order_column": None,
+            "context_column": context,
+            "reason": "The caller selected a group/context column; every matching context stays in one split.",
+            "enforcement": "external streaming tabular path; the selected column is excluded from learning features",
+        }
+    elif streaming:
+        policy = {
+            "strategy": "stable_record_hash",
+            "execution_strategy": "stable_record_hash",
+            "order_column": None,
+            "context_column": None,
+            "reason": "External streaming assigns each whole record to a deterministic held-out split.",
+            "enforcement": "external streaming tabular path",
+        }
+    elif temporal:
+        policy = {
             "strategy": "temporal",
             "execution_strategy": "temporal",
             "order_column": temporal,
@@ -79,8 +164,8 @@ def _split_policy(columns: list[str], task: str | None, *, target: str | None, r
             "reason": "A time-like column was found; preserve source order to reduce future-to-past leakage.",
             "enforcement": "materialized backends preserve source order; the input is not re-sorted by this column",
         }
-    if context:
-        return {
+    elif context:
+        policy = {
             "strategy": "context",
             "execution_strategy": "context",
             "order_column": None,
@@ -88,8 +173,8 @@ def _split_policy(columns: list[str], task: str | None, *, target: str | None, r
             "reason": "A group-like column was found; keep every matching context in exactly one split.",
             "enforcement": "external streaming tabular path; AutoTrainer routes detected context data through the built-in group-exclusive splitter",
         }
-    if task in {"binary_classification", "multiclass_classification"}:
-        return {
+    elif task in {"binary_classification", "multiclass_classification"}:
+        policy = {
             "strategy": "stratified",
             "execution_strategy": "stratified",
             "order_column": None,
@@ -97,13 +182,21 @@ def _split_policy(columns: list[str], task: str | None, *, target: str | None, r
             "reason": "Classification labels are partitioned deterministically by class.",
             "enforcement": "materialized backends",
         }
-    return {
+    else:
+        policy = {
             "strategy": "random",
             "execution_strategy": "random",
-        "order_column": None,
-        "context_column": None,
-        "reason": "No temporal, context, or classification signal was available.",
-        "enforcement": "materialized backends",
+            "order_column": None,
+            "context_column": None,
+            "reason": "No temporal, context, or classification signal was available.",
+            "enforcement": "materialized backends",
+        }
+    return {
+        **policy,
+        "validation_percent": validation_percent,
+        "test_percent": test_percent,
+        "train_percent": 100 - validation_percent - test_percent,
+        "estimated_records": max(0, int(row_count)),
     }
 
 
@@ -113,18 +206,37 @@ def recommend_chunk_policy(
     *,
     seed: int = 42,
     target_records: int | None = None,
+    minimum_records: int | None = None,
+    maximum_records: int | None = None,
+    validation_percent: int = 15,
+    test_percent: int = 15,
 ) -> dict[str, Any]:
     """Return a variable, contiguous chunk plan without materialising dataset rows."""
     records = max(0, int(records))
     features = max(1, int(features))
     automatic_target = max(512, min(16_384, 2 ** max(9, min(14, int(math.log2(max(2, 1_048_576 // features)))))))
-    target = automatic_target if target_records is None else max(128, min(262_144, int(target_records)))
-    planner = ContextChunkPlanner(target_records=target, seed=seed)
+    target = automatic_target if target_records is None else int(target_records)
+    minimum = target * 3 // 4 if minimum_records is None else int(minimum_records)
+    maximum = target * 5 // 4 if maximum_records is None else int(maximum_records)
+    if not 128 <= target <= 262_144:
+        raise ValueError("chunk_target_records must be between 128 and 262144")
+    if minimum < 1 or maximum < minimum or not minimum <= target <= maximum:
+        raise ValueError("chunk limits must satisfy 1 <= minimum <= target <= maximum")
+    planner = ContextChunkPlanner(
+        target_records=target,
+        minimum_records=minimum,
+        maximum_records=maximum,
+        validation_percent=validation_percent,
+        test_percent=test_percent,
+        seed=seed,
+    )
     summary = planner.summary(records, preview=6)
     return {
         "strategy": "adaptive_contiguous_ranges",
         "reason": "Variable ranges reduce synchronized allocation spikes while preserving input order.",
         "target_records": target,
+        "requested_minimum_records": minimum,
+        "requested_maximum_records": maximum,
         "seed": int(seed),
         **summary,
     }
@@ -138,6 +250,12 @@ def analyze_inspection(
     feature_count: int | None = None,
     seed: int = 42,
     chunk_target_records: int | None = None,
+    chunk_minimum_records: int | None = None,
+    chunk_maximum_records: int | None = None,
+    validation_percent: int = 15,
+    test_percent: int = 15,
+    group_column: str | None = None,
+    streaming: bool = False,
 ) -> dict[str, Any]:
     """Analyze one bounded router inspection and return JSON-safe diagnostics."""
     all_columns = [str(column) for column in inspection.get("columns") or [] if _text(column)]
@@ -194,9 +312,13 @@ def analyze_inspection(
                     missing_rate=stats["missing_rate"],
                 )
             )
-        if column != selected_target and (
-            _ID_HINT.search(column) or (stats["unique_rate"] >= 0.98 and stats["unique_values"] >= 20)
-        ):
+        named_identifier = bool(_ID_HINT.search(column))
+        high_cardinality_category = (
+            stats["inferred_type"] == "categorical"
+            and stats["unique_rate"] >= 0.98
+            and stats["unique_values"] >= 20
+        )
+        if column != selected_target and (named_identifier or high_cardinality_category):
             findings.append(
                 _issue(
                     "identifier_like_feature",
@@ -204,6 +326,8 @@ def analyze_inspection(
                     "This feature looks identifier-like in the sample and can overfit or leak identity.",
                     column=column,
                     unique_rate=stats["unique_rate"],
+                    inferred_type=stats["inferred_type"],
+                    basis="column_name" if named_identifier else "high_cardinality_categorical",
                 )
             )
 
@@ -263,12 +387,25 @@ def analyze_inspection(
 
     estimated_records = int(records_estimate or inspection.get("rows") or inspection.get("sampled_rows") or len(sampled))
     estimated_features = int(feature_count or max(1, len(all_columns) - (1 if selected_target else 0)))
-    split_policy = _split_policy(all_columns, task, target=selected_target, row_count=estimated_records)
+    split_policy = _split_policy(
+        all_columns,
+        task,
+        target=selected_target,
+        row_count=estimated_records,
+        validation_percent=validation_percent,
+        test_percent=test_percent,
+        group_column=group_column,
+        streaming=streaming,
+    )
     chunk_policy = recommend_chunk_policy(
         estimated_records,
         estimated_features,
         seed=seed,
         target_records=chunk_target_records,
+        minimum_records=chunk_minimum_records,
+        maximum_records=chunk_maximum_records,
+        validation_percent=validation_percent,
+        test_percent=test_percent,
     )
     warnings = [item["message"] for item in findings if item["severity"] in {"warning", "error"}]
     source = {
@@ -312,5 +449,14 @@ def analyze_inspection(
 
 def inspect_path(path: str | Path, router: Any, *, target: str | None = None, seed: int = 42) -> dict[str, Any]:
     """Inspect a local path through the existing router, then add data-health evidence."""
-    inspection = router.inspect(Path(path).expanduser().resolve())
-    return {"inspection": inspection, **analyze_inspection(inspection, target=target, seed=seed)}
+    source = Path(path).expanduser().resolve()
+    inspection = router.inspect(source)
+    return {
+        "inspection": inspection,
+        **analyze_inspection(
+            inspection,
+            target=target,
+            records_estimate=estimate_records(source, inspection),
+            seed=seed,
+        ),
+    }

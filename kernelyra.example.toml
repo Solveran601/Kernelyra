@@ -6,7 +6,6 @@ backend = "auto"
 # Explicit execution target. `hybrid` requires a detected accelerator.
 execution = "cpu"
 # Recommendation only: it changes bounded data/memory defaults, not limits.
-algorithm_pack = "balanced"
 batch_size = 64
 max_steps = 5000
 target_metric = 0.93
@@ -28,6 +27,13 @@ degradation_margin = 0.03
 degradation_patience = 3
 early_stopping_patience = 18
 target_patience = 3
+# Reproducible held-out split and variable contiguous planning ranges.
+validation_percent = 15
+test_percent = 15
+# group_column = "customer_id"
+# chunk_target_records = 4096
+# chunk_minimum_records = 2048
+# chunk_maximum_records = 6144
 
 [mcp.permissions]
 allowed_roots = ["."]

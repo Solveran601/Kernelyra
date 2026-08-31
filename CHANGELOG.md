@@ -1,5 +1,84 @@
 # Changelog
 
+## Unreleased
+
+## 0.7.0b1 — 2026-08-31
+
+- Published the first public beta for Windows x64 and Python 3.11–3.13. The
+  GitHub Release carries the verified wheel, source distribution, source ZIP,
+  checksums, and release manifest; PyPI publication remains disabled.
+- Updated the public README files to identify only the beta's verified tabular
+  scope and to provide a direct GitHub Release wheel installation path.
+- Made native multiclass bulk updates reuse their prepared minibatch buffers
+  and calculate cross-entropy only for the final reported step. Numerical
+  finite-value guards still execute on every update.
+- Removed virtual-environment assumptions from the public PowerShell journeys:
+  they now use the selected or ordinary installed Python interpreter.
+
+- Removed algorithm packs, custom pack files, `--pack`/`--profile` options,
+  related PowerShell commands, and SDK selectors. The engine now exposes one
+  automatic bounded policy; callers control CPU, RAM, GPU and thread ceilings
+  explicitly. Existing pack/profile TOML or environment settings now fail with
+  a migration message instead of being silently ignored.
+- Made persistent checkpoints opt-in: resume, final output, and Model Guard
+  rollback now default to `none`, so a caller chooses every durable model
+  write explicitly.
+- Added message-safe streaming preparation for supported text, JSONL/NDJSON,
+  and Telegram exports; it never writes prepared chunks unless an output path
+  is supplied.
+- Added transparent `Settings.validate()` / `Settings.explain()`, run-handle
+  snapshots, metrics, bounded logs, optional reports, a public side-effect-free
+  `ModelGuard`, and `kernelyra native self-test` for the installed native ABI.
+
+## 0.6.0a2 — 2026-08-28
+
+- Added end-to-end configurable held-out split controls: validation/test
+  percentages, a group/context column, and a deterministic split seed now
+  flow through the Python API, CLI, PowerShell, TOML, dataset manifest, and
+  materialized backend configuration. Streaming refuses a plan that cannot
+  supply the minimum bounded validation and test views before a run starts.
+- Added configurable variable chunk bounds (`target`, `minimum`, `maximum`)
+  to Data Doctor and training planning, with validation that keeps the
+  requested range internally consistent.
+- Replaced duplicate public instructions with one maintained internal Russian
+  reference. It covers public Python, CLI, PowerShell, configuration,
+  data-health, packs, native roles, SDK protocol, and text preparation, while
+  release archives explicitly exclude it.
+- Added a binary-compatible seeded context-split ABI across Rust, C, C++ and
+  Python. A non-default seed now changes group assignment reproducibly without
+  invalidating the historical default mapping or old native DLLs.
+- Added an active C core under `native/core/c`: overflow-safe matrix and
+  random-minibatch contracts are checked before any native buffer resize or
+  pointer arithmetic.
+- Added a Rust batch planner and a Zig one-pass feature-plus-target gather to
+  the random-minibatch path. The previous C++ sampler/gather remains a checked
+  fallback when a component is unavailable.
+- Strengthened the Fortran pre-update guard: it now proves every candidate
+  weight and bias remains representable as finite float32 before parameters are
+  mutated. The native contract test covers this no-mutation overflow case.
+- Made the source `native build` command compile the C core too, matching the
+  CMake build graph.
+
+## 0.6.0a1 — 2026-08-28
+
+- Added a fused Zig preprocessing route for the public `impute → normalize →
+  clip` operation. It performs the compatible float32 transform in one native
+  traversal when all three options are requested, while the checked fallback
+  remains available for every other flag combination.
+- Added the Rust deterministic minibatch sampler to the native random-batch
+  path and retained the C++ sampler as a checked fallback. Zig gathers the
+  selected rows and the existing Fortran dense kernels execute the portable
+  numeric update; the C ABI/C++ dispatcher remains the ownership boundary.
+- Added a per-model `native_execution` trace. It records native engines that
+  actually ran and never represents a compiled or enabled component as proof
+  of execution.
+- Strengthened the wide Fortran gradient reduction with OpenMP SIMD and
+  double-precision accumulation before the float32 gradient writeback.
+- Expanded the maintained CPU evidence into two comparable workloads: dense
+  binary training and fused preprocessing. The raw JSON includes all runs,
+  runtime metadata, correctness checks, and an explicitly untimed five-engine
+  capability probe. No universal performance claim is made.
+
 ## 0.5.0a3 — 2026-08-27
 
 - Added immutable built-in algorithm packs plus validated user packs that can
@@ -90,7 +169,7 @@
 - Added `AutoTrainer`, top-level `plan`/`train`/`finetune`, TOML/environment/explicit configuration precedence and exact manual-setting validation.
 - Added a lazy real PyTorch backend with safe weights-only fine-tuning, CUDA limits, mixed precision and gradient clipping.
 - Added bounded-memory CSV/TSV/JSONL/Parquet streaming with source fingerprints, parallel encoding, prefetch and checkpoint cursor restoration.
-- Added the stable `kernelyra-jsonl/1` stdio contract and adapters for C, C++, C#, Rust, Go, PHP, Java, Kotlin, Swift and Ruby.
+- Added the stable `kernelyra-jsonl/1` stdio contract and the original cross-language adapter foundation.
 - Added the shared easy-library API (`Config` plus `fit`/`tune`) for Python, Go, C++17, Rust and C#, including CMake, Cargo, Go module and NuGet package metadata.
 - Added a reproducible direct-framework benchmark for wall time, process-tree RAM, held-out score and checkpoint size without making unsupported speed claims.
 - Split small core, backend, data, gateway, MCP and full optional dependency sets.

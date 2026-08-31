@@ -1,8 +1,10 @@
 # Kernelyra SDKs
 
-The native SDK foundation is C, C++17 and Rust. They use the same local engine,
-the same JSONL protocol and explicit execution vocabulary: `cpu` or `hybrid`,
-an algorithm pack, plus CPU/RAM/GPU/thread limits set by the developer.
+The maintained SDK foundation is C, C++17 and Rust. Their local engine is the
+same C++ ABI dispatcher with Fortran dense numerics, Rust policies and Zig
+bounded-memory operations. Every client uses the same JSONL protocol and
+explicit `cpu` or `hybrid` execution vocabulary plus developer-set
+CPU/RAM/GPU/thread limits.
 
 | Language | Package source | Main call | Build metadata |
 |---|---|---|---|
@@ -25,14 +27,12 @@ request.
 ```cpp
 auto config = kernelyra::Config::automatic()
     .cpu_only()
-    .algorithm_pack(kernelyra::AlgorithmPack::throughput)
     .resources(90, 80, 0, 8);
 ```
 
 ```rust
 let config = Config::default()
     .cpu_only()
-    .algorithm_pack(AlgorithmPack::Throughput)
     .resources(90, 80, 0)
     .threads(8);
 ```
@@ -40,7 +40,6 @@ let config = Config::default()
 ```c
 kernelyra_run_options options = {
     .target = "label", .execution = KERNELYRA_EXECUTION_CPU,
-    .algorithm_pack = KERNELYRA_PACK_THROUGHPUT,
     .cpu = 90, .ram = 80, .threads = 8
 };
 kernelyra_train_with_options(&client, "train.csv", &options, response, sizeof(response));

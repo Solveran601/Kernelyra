@@ -26,12 +26,6 @@ enum {
   KR_C_EXECUTION_HYBRID = 2
 };
 enum {
-  KR_C_PACK_CAREFUL = 0,
-  KR_C_PACK_BALANCED = 1,
-  KR_C_PACK_THROUGHPUT = 2,
-  KR_C_PACK_MAXIMUM = 3
-};
-enum {
   KR_C_POLICY_OK = 0,
   KR_C_POLICY_INVALID_ARGUMENT = 1,
   KR_C_POLICY_INCOMPATIBLE_ABI = 2,
@@ -46,7 +40,6 @@ enum {
 typedef struct kr_c_execution_request {
   uint32_t abi_version;
   uint32_t execution;
-  uint32_t algorithm_pack;
   uint32_t cpu_percent;
   uint32_t ram_percent;
   uint32_t gpu_percent;
@@ -84,6 +77,8 @@ int kr_c_chunk_cursor_init_from_plan(
     const kr_c_execution_plan* plan,
     uint64_t seed);
 int kr_c_context_split(uint64_t context_key, uint32_t validation_percent, uint32_t test_percent);
+int kr_c_context_split_seeded(
+    uint64_t context_key, uint64_t seed, uint32_t validation_percent, uint32_t test_percent);
 int kr_c_execution_plan_make(
     const kr_c_execution_request* request,
     kr_c_execution_plan* plan);
