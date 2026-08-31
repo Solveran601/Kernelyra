@@ -161,11 +161,19 @@ int main() {
               "C core rejects a batch that exceeds its source table")) {
     return 1;
   }
+  kr_c_model_contract model_contract{};
+  if (!expect(kr_c_core_model_contract_make(8U, 3U, &model_contract) == 1 &&
+                  model_contract.weight_elements == 24U && model_contract.weight_bytes == 96U,
+              "C core publishes exact overflow-checked model storage") ||
+      !expect(kr_c_core_model_contract_make(
+                  std::numeric_limits<size_t>::max(), 2U, &model_contract) == 0,
+              "C core rejects an overflowing model table")) {
+    return 1;
+  }
 
   kr_c_execution_request request{};
   request.abi_version = KR_ABI_VERSION;
   request.execution = KR_C_EXECUTION_CPU;
-  request.algorithm_pack = KR_C_PACK_THROUGHPUT;
   request.cpu_percent = 90U;
   request.ram_percent = 75U;
   request.gpu_percent = 0U;
@@ -233,11 +241,22 @@ int main() {
       return 1;
     }
   }
+  float bulk_loss = 0.0F;
+  const bool bulk_multiclass_ok =
+      kr_model_train_random_steps(model, multiclass_x, multiclass_y, 6U, 4U, 80U, &bulk_loss) == 1;
   std::vector<float> probabilities(18U);
   const bool prediction_ok = kr_model_predict(model, multiclass_x, 6U, probabilities.data(), probabilities.size()) == 1;
   kr_model_destroy(model);
-  if (!expect(prediction_ok && std::isfinite(final_loss) && final_loss < first_loss,
-              "Fortran multiclass core reduces loss and predicts")) {
+  if (!expect(bulk_multiclass_ok && prediction_ok && std::isfinite(final_loss) &&
+                  std::isfinite(bulk_loss) && final_loss < first_loss,
+              "Fortran multiclass core returns the final bulk loss and predicts")) {
+    return 1;
+  }
+  kr_model_config oversized = multiclass;
+  oversized.features = 1000000U;
+  oversized.classes = 65536U;
+  if (!expect(kr_model_create(&oversized) == nullptr,
+              "C++ rejects a model shape before attempting an unsafe allocation")) {
     return 1;
   }
 

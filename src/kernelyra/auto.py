@@ -15,8 +15,6 @@ from .data_health import analyze_inspection, estimate_records
 from .errors import ConfigurationError, DatasetError, RunError
 from .hardware import (
     execution_policy,
-    legacy_profile_for_pack,
-    resolve_algorithm_pack,
     resolve_execution_target,
 )
 from .models import DatasetInfo, RunConfig, RunInfo, RunStatus, TaskType
@@ -35,9 +33,7 @@ _ENV_KEYS = {
     "backend": "KERNELYRA_BACKEND",
     "architecture": "KERNELYRA_ARCHITECTURE",
     "model_format": "KERNELYRA_MODEL_FORMAT",
-    "profile": "KERNELYRA_PROFILE",
     "execution": "KERNELYRA_EXECUTION",
-    "algorithm_pack": "KERNELYRA_ALGORITHM_PACK",
     "batch_size": "KERNELYRA_BATCH_SIZE",
     "max_steps": "KERNELYRA_MAX_STEPS",
     "target_metric": "KERNELYRA_TARGET_METRIC",
@@ -76,9 +72,7 @@ _DEFAULTS: dict[str, Any] = {
     "backend": "auto",
     "architecture": "auto",
     "model_format": "auto",
-    "profile": "auto",
     "execution": "auto",
-    "algorithm_pack": "balanced",
     "batch_size": None,
     "max_steps": 1400,
     "target_metric": None,
@@ -106,9 +100,9 @@ _DEFAULTS: dict[str, Any] = {
     "chunk_target_records": None,
     "chunk_minimum_records": None,
     "chunk_maximum_records": None,
-    "checkpoint_resume": "last",
-    "checkpoint_final": "best",
-    "checkpoint_rollback": "best",
+    "checkpoint_resume": "none",
+    "checkpoint_final": "none",
+    "checkpoint_rollback": "none",
 }
 
 _INTEGER_FIELDS = {
@@ -117,6 +111,8 @@ _INTEGER_FIELDS = {
     "validation_percent", "test_percent", "chunk_target_records", "chunk_minimum_records", "chunk_maximum_records",
 }
 _FLOAT_FIELDS = {"target_metric", "learning_rate", "weight_decay", "min_improvement", "degradation_margin"}
+_REMOVED_OPTION_NAMES = {"algorithm_pack", "profile"}
+_REMOVED_ENV_KEYS = {"KERNELYRA_ALGORITHM_PACK", "KERNELYRA_PROFILE"}
 
 
 def _stream_limit(policy: Mapping[str, Any], maximum: int) -> int:
@@ -143,7 +139,7 @@ def _coerce(name: str, value: Any) -> Any:
         return result
     if name == "group_column":
         return str(value).strip()
-    if name in {"task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "precision", "data_mode", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback"}:
+    if name in {"task", "backend", "architecture", "model_format", "execution", "precision", "data_mode", "checkpoint_resume", "checkpoint_final", "checkpoint_rollback"}:
         return str(value).strip().lower()
     return str(value)
 
@@ -169,10 +165,7 @@ class TrainingPlan:
     backend: str
     architecture: str
     model_format: str
-    profile: str
     execution: str
-    algorithm_pack: str
-    execution_mode: str
     batch_size: int
     max_steps: int
     target_metric: float
@@ -245,7 +238,7 @@ class AutoTrainer:
 
     def __init__(
         self,
-        workspace: str | Path = ".",
+        workspace: str | Path | None = None,
         *,
         config: str | Path | None = None,
         environ: Mapping[str, str] | None = None,
@@ -271,6 +264,21 @@ class AutoTrainer:
 
     def _resolve(self, explicit: Mapping[str, Any]) -> _Resolved:
         configured = _config_values(self.config_path)
+        removed = sorted(set(configured) & _REMOVED_OPTION_NAMES)
+        if removed:
+            raise ConfigurationError(
+                "Removed training option(s): " + ", ".join(removed) + ". "
+                "Use explicit execution and CPU/RAM/GPU/thread limits instead."
+            )
+        unknown_configured = sorted(set(configured) - set(_DEFAULTS))
+        if unknown_configured:
+            raise ConfigurationError("Unknown training config option(s): " + ", ".join(unknown_configured))
+        active_removed_env = sorted(name for name in _REMOVED_ENV_KEYS if self.environ.get(name, "") != "")
+        if active_removed_env:
+            raise ConfigurationError(
+                "Removed environment option(s): " + ", ".join(active_removed_env) + ". "
+                "Use KERNELYRA_EXECUTION and explicit resource environment variables instead."
+            )
         values: dict[str, Any] = {}
         sources: dict[str, str] = {}
         for name, default in _DEFAULTS.items():
@@ -315,11 +323,20 @@ class AutoTrainer:
                 raise ConfigurationError(str(item.get("diagnostic") or f"Backend '{requested}' is unavailable"))
             if task not in item.get("task_types", []):
                 raise ConfigurationError(f"Backend '{requested}' does not support task '{task}'")
+            if policy["execution"] not in item.get("execution_targets", ["cpu"]):
+                raise ConfigurationError(
+                    f"Backend '{requested}' is CPU-only. Hybrid execution requires a compatible PyTorch or TensorFlow GPU backend."
+                )
             return requested
         for candidate in tuple(policy["backend_order"]):
             item = backends.get(candidate)
             if item and item.get("available") and task in item.get("task_types", []):
                 return candidate
+        if policy["execution"] == "hybrid":
+            raise ConfigurationError(
+                "Hybrid execution requires an installed PyTorch or TensorFlow backend with a usable GPU; "
+                "buy or enable a compatible GPU, or use execution='cpu'."
+            )
         raise ConfigurationError(f"No available backend supports task '{task}'")
 
     def plan(self, dataset: str | Path, **overrides: Any) -> TrainingPlan:
@@ -334,6 +351,13 @@ class AutoTrainer:
         if not inspection.get("trainable"):
             raise DatasetError("Dataset format is recognized but no trainable ingestor is installed")
         target = resolved.values["target"] or inspection.get("suggested_target")
+        columns = [str(column) for column in (inspection.get("columns") or [])]
+        if target is not None and columns and str(target) not in columns:
+            preview = ", ".join(columns[:12])
+            suffix = ", ..." if len(columns) > 12 else ""
+            raise DatasetError(
+                f"Target column '{target}' was not found in the dataset. Available columns: {preview}{suffix}"
+            )
         task = resolved.values["task"]
         if task == "auto":
             inspected_tasks = inspection.get("task_types") or []
@@ -341,20 +365,12 @@ class AutoTrainer:
         if task not in {item.value for item in TaskType}:
             raise ConfigurationError(f"Unknown task '{task}'")
         try:
-            # ``profile`` remains accepted only to migrate old configuration;
-            # new code names an algorithm pack and an execution target.
-            selected_pack = resolve_algorithm_pack(
-                resolved.values["algorithm_pack"] if resolved.values["profile"] == "auto" else resolved.values["profile"]
-            )
             execution = resolve_execution_target(resolved.values["execution"], self.workspace.hardware)
         except KeyError as error:
             raise ConfigurationError(str(error)) from None
-        profile = legacy_profile_for_pack(selected_pack)
         policy = execution_policy(
-            profile,
             self.workspace.hardware,
             execution_target=execution,
-            algorithm_pack=selected_pack,
         )
         backend = self._select_backend(resolved.values["backend"], task, policy)
         architecture, model_format = resolve_training_contract(
@@ -370,7 +386,10 @@ class AutoTrainer:
         if not 0 <= gpu <= 100:
             raise ConfigurationError("gpu must be between 0 and 100 percent")
         if execution == "cpu" and gpu:
-            raise ConfigurationError("CPU execution cannot reserve GPU; choose execution='hybrid' to use an accelerator")
+            raise ConfigurationError(
+                "GPU budget was requested for CPU-only execution. Choose execution='hybrid'; "
+                "if no accelerator is detected, buy or enable a compatible GPU."
+            )
         cpu_threads = max(1, int(self.workspace.hardware.get("cpu_threads") or 1))
         threads = resolved.values["threads"]
         if threads is None:
@@ -378,7 +397,6 @@ class AutoTrainer:
         threads = int(threads)
         if not 1 <= threads <= cpu_threads:
             raise ConfigurationError(f"threads must be between 1 and detected CPU thread count ({cpu_threads})")
-        columns = inspection.get("columns") or []
         shape = inspection.get("shape") or []
         features = max(1, int(shape[1]) if len(shape) >= 2 else len(columns) - 1)
         size = int(inspection.get("bytes") or source.stat().st_size)
@@ -387,7 +405,6 @@ class AutoTrainer:
         batch = plan_batch(
             records=records,
             features=features,
-            profile=profile,
             ram_percent=ram,
             ram_gb=float(self.workspace.hardware.get("ram_gb") or 8),
             mode="manual" if requested_batch is not None else "auto",
@@ -486,7 +503,7 @@ class AutoTrainer:
         # A fixed 512 MiB copy limit is therefore unsafe on low-memory machines:
         # the source, decoded rows, encoded arrays and train/validation/test
         # buffers can coexist. Select the streaming path from the resolved
-        # hardware profile instead of waiting for the import hard limit.
+        # resolved RAM limit instead of waiting for the import hard limit.
         stream_limit = _stream_limit(policy, self.workspace.datasets.MAX_IMPORT_BYTES)
         requested_data_mode = resolved.values["data_mode"]
         if requested_data_mode not in {"auto", "memory", "stream"}:
@@ -557,10 +574,7 @@ class AutoTrainer:
             backend=backend,
             architecture=architecture,
             model_format=model_format,
-            profile=profile,
             execution=execution,
-            algorithm_pack=selected_pack,
-            execution_mode=selected_pack,
             batch_size=batch.applied,
             max_steps=max_steps,
             target_metric=target_metric,
@@ -604,6 +618,7 @@ class AutoTrainer:
         progress: Callable[[RunInfo], None] | None = None,
         poll_interval: float = .25,
         model: str | Path | None = None,
+        base_run_id: str | None = None,
         **overrides: Any,
     ) -> TrainingResult:
         plan = self.plan(dataset, **overrides)
@@ -623,10 +638,8 @@ class AutoTrainer:
             plan.backend,
             task,
             execution_policy(
-                plan.profile,
                 self.workspace.hardware,
                 execution_target=plan.execution,
-                algorithm_pack=plan.algorithm_pack,
             ),
         )
         plan = replace(
@@ -646,9 +659,7 @@ class AutoTrainer:
                 model_format=plan.model_format,
                 name=str(overrides.get("name") or Path(plan.dataset).stem)[:80],
                 mode="Fine-tune" if model else "Train",
-                profile=plan.profile,
                 execution=plan.execution,
-                algorithm_pack=plan.algorithm_pack,
                 target_metric=plan.target_metric,
                 batch_mode="manual" if overrides.get("batch_size") is not None else "auto",
                 batch_size=plan.batch_size,
@@ -657,6 +668,7 @@ class AutoTrainer:
                 ram=plan.ram,
                 gpu=plan.gpu,
                 threads=plan.threads,
+                base_run_id=base_run_id,
                 model_path=str(Path(model).expanduser().resolve()) if model else None,
                 accept_batch_risk=True,
                 seed=plan.seed,
@@ -692,14 +704,17 @@ class AutoTrainer:
             progress(current)
         if current.status in {RunStatus.ERROR.value, RunStatus.ERROR_RECOVERABLE.value}:
             raise RunError(current.message)
-        checkpoint = self.workspace.runtime.checkpoint_path(
-            current.id, kind=plan.checkpoint_policy["final"]
+        final_kind = plan.checkpoint_policy["final"]
+        checkpoint = (
+            self.workspace.runtime.checkpoint_path(current.id, kind=final_kind)
+            if final_kind != "none"
+            else None
         )
         return TrainingResult(
             plan=plan,
             dataset=imported,
             run=current,
-            checkpoint_path=str(checkpoint) if checkpoint.is_file() else None,
+            checkpoint_path=str(checkpoint) if checkpoint is not None and checkpoint.is_file() else None,
         )
 
     def finetune(
@@ -721,15 +736,25 @@ class AutoTrainer:
             )
             if overrides["backend"] is None:
                 raise ConfigurationError("Cannot infer a backend from the model extension; set backend explicitly")
-        return self.train(dataset, model=model_path, **overrides)
+        base_run_id: str | None = None
+        try:
+            metadata = self.workspace.runtime.checkpoints.verify(model_path)
+            candidate = metadata.get("run_id")
+            if isinstance(candidate, str) and self.workspace.storage.get_run(candidate) is not None:
+                base_run_id = candidate
+        except RunError:
+            # External checkpoints remain valid fine-tune inputs.  They have
+            # no local run lineage to preserve.
+            pass
+        return self.train(dataset, model=model_path, base_run_id=base_run_id, **overrides)
 
 
-def plan(dataset: str | Path, *, workspace: str | Path = ".", config: str | Path | None = None, **options: Any) -> TrainingPlan:
+def plan(dataset: str | Path, *, workspace: str | Path | None = None, config: str | Path | None = None, **options: Any) -> TrainingPlan:
     with AutoTrainer(workspace, config=config) as trainer:
         return trainer.plan(dataset, **options)
 
 
-def train(dataset: str | Path, *, workspace: str | Path = ".", config: str | Path | None = None, **options: Any) -> TrainingResult:
+def train(dataset: str | Path, *, workspace: str | Path | None = None, config: str | Path | None = None, **options: Any) -> TrainingResult:
     with AutoTrainer(workspace, config=config) as trainer:
         return trainer.train(dataset, **options)
 
@@ -738,7 +763,7 @@ def finetune(
     model: str | Path,
     dataset: str | Path,
     *,
-    workspace: str | Path = ".",
+    workspace: str | Path | None = None,
     config: str | Path | None = None,
     **options: Any,
 ) -> TrainingResult:

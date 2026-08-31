@@ -6,6 +6,7 @@ import os
 import platform
 import sys
 import time
+from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from .client import DaemonClient, RemoteError
 from .errors import DaemonUnavailableError, KernelyraError
 from .models import RunConfig
 
-VERSION = "0.6.0a2"
+VERSION = "0.7.0b1"
 TERMINAL_STATES = {"completed", "stopped", "error", "error_recoverable"}
 EXIT_EXPECTED_ERROR = 2
 EXIT_AUTHORIZATION = 4
@@ -24,7 +25,10 @@ EXIT_UNAVAILABLE = 5
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kernelyra", description=f"Kernelyra {VERSION}")
-    parser.add_argument("--workspace", default=".", help="Workspace directory")
+    parser.add_argument(
+        "--workspace",
+        help="Persistent run-state directory. Stateful commands require this explicit path.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit stable JSON output")
     parser.add_argument("--timeout", type=float, default=10.0, help="Network timeout in seconds")
     parser.add_argument(
@@ -42,28 +46,9 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("formats", help="List recognized routes and installed trainable adapters")
     advise = commands.add_parser("advise", help="Inspect a file with the bounded Rust format probe and suggest a safe AI data path")
     advise.add_argument("path")
-    commands.add_parser("execution", help="Show CPU/hybrid targets and available algorithm packs")
-    packs = commands.add_parser("packs", help="View and customize validated algorithm packs")
-    pack_commands = packs.add_subparsers(dest="pack_command", required=True)
-    pack_commands.add_parser("list", help="Show the pack table")
-    pack_commands.add_parser("path", help="Show the editable custom-pack JSON path")
-    pack_commands.add_parser("algorithms", help="Show algorithms that may be combined in a custom pack")
-    pack_show = pack_commands.add_parser("show", help="Show one effective pack")
-    pack_show.add_argument("name")
-    pack_clone = pack_commands.add_parser("clone", help="Create an editable pack from an existing pack")
-    pack_clone.add_argument("name")
-    pack_clone.add_argument("--from", dest="base", default="balanced")
-    pack_clone.add_argument("--label")
-    for action in ("add-algorithm", "remove-algorithm"):
-        item = pack_commands.add_parser(action)
-        item.add_argument("name")
-        item.add_argument("algorithm")
-    pack_delete = pack_commands.add_parser("delete")
-    pack_delete.add_argument("name")
+    commands.add_parser("execution", help="Show CPU/hybrid targets and the automatic execution policy")
     tune = commands.add_parser("tune", help="Preview deterministic native execution tuning")
     tune.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
-    tune.add_argument("--pack", dest="algorithm_pack", default="balanced")
-    tune.add_argument("--profile", help=argparse.SUPPRESS)
     tune.add_argument("--records", type=int, default=100_000)
     tune.add_argument("--features", type=int, default=32)
     tune.add_argument("--batch-size", type=int, default=64)
@@ -77,6 +62,25 @@ def _parser() -> argparse.ArgumentParser:
     chunk_plan.add_argument("--validation-percent", type=int, default=15)
     chunk_plan.add_argument("--test-percent", type=int, default=15)
 
+    text = commands.add_parser(
+        "text",
+        help="Stream supported conversation exports into message-safe chunks without creating a workspace",
+    )
+    text_commands = text.add_subparsers(dest="text_command", required=True)
+    text_plan = text_commands.add_parser("plan", help="Preview or explicitly export conversation-safe JSONL chunks")
+    text_plan.add_argument("path")
+    text_plan.add_argument("--format", choices=["auto", "jsonl", "telegram_json", "plain_text"], default="auto")
+    text_plan.add_argument("--encoding", default="utf-8")
+    text_plan.add_argument("--conversation-id", help="Override the source conversation id for plain text or Telegram JSON")
+    text_plan.add_argument("--maximum-characters", type=int, default=8192)
+    text_plan.add_argument("--minimum-characters", type=int, default=1024)
+    text_plan.add_argument("--topic-similarity-threshold", type=float, default=.18)
+    text_plan.add_argument("--topic-window-messages", type=int, default=4)
+    text_plan.add_argument("--topic-gap-seconds", type=float, default=1800)
+    text_plan.add_argument("--preview", type=int, default=3, help="Number of chunks to show when --output is omitted")
+    text_plan.add_argument("--output", help="Explicit JSONL destination; omitted means no file is written")
+    text_plan.add_argument("--overwrite", action="store_true", help="Allow replacing the explicit --output path")
+
     def add_training_options(item: argparse.ArgumentParser) -> None:
         item.add_argument("dataset", help="Dataset file or folder path")
         item.add_argument("--config", help="TOML configuration path; defaults to WORKSPACE/kernelyra.toml")
@@ -86,8 +90,6 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--architecture", choices=["auto", "linear", "mlp", "transformer", "cnn", "vision-transformer", "rnn", "pointnet", "graph-neural-network"])
         item.add_argument("--model-format", choices=["auto", "kernelyra-npz", "pytorch-state", "keras", "gguf", "safetensors", "onnx"])
         item.add_argument("--execution", choices=["auto", "cpu", "hybrid"], help="CPU only or CPU plus detected accelerator")
-        item.add_argument("--pack", dest="algorithm_pack", help="Built-in or custom algorithm pack; resource limits remain explicit")
-        item.add_argument("--profile", help=argparse.SUPPRESS)
         item.add_argument("--batch-size", type=int)
         item.add_argument("--accept-batch-risk", action="store_true")
         item.add_argument("--max-steps", type=int)
@@ -120,12 +122,12 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--degradation-patience", type=int, help="Consecutive bad validations before rollback")
         item.add_argument("--early-stopping-patience", type=int, help="Validations without progress before stop")
         item.add_argument("--target-patience", type=int, help="Consecutive target hits required to stop")
-        item.add_argument("--checkpoint-resume", choices=["last", "best"], help="Checkpoint used when a run resumes")
-        item.add_argument("--checkpoint-final", choices=["best", "last"], help="Checkpoint returned after training")
+        item.add_argument("--checkpoint-resume", choices=["none", "last", "best"], help="Persistent checkpoint used when a run resumes")
+        item.add_argument("--checkpoint-final", choices=["none", "best", "last"], help="Persistent checkpoint returned after training")
         item.add_argument(
             "--checkpoint-rollback",
-            choices=["best"],
-            help="Model Guard rollback checkpoint; best is the only safe value",
+            choices=["none", "best"],
+            help="Model Guard rollback checkpoint; disabled unless explicitly set to best",
         )
 
     plan_command = commands.add_parser("plan", help="Inspect data and print the resolved automatic training plan")
@@ -187,12 +189,10 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--accept-batch-risk", action="store_true")
     create.add_argument("--max-steps", type=int, default=1400)
     create.add_argument("--execution", choices=["auto", "cpu", "hybrid"], default="auto")
-    create.add_argument("--pack", dest="algorithm_pack", default="balanced")
     create.add_argument("--cpu", type=int)
     create.add_argument("--ram", type=int)
     create.add_argument("--gpu", type=int)
     create.add_argument("--threads", type=int)
-    create.add_argument("--profile", default="auto", help=argparse.SUPPRESS)
     create.add_argument("--seed", type=int, default=42)
     create.add_argument("--start", action="store_true")
     for name in ("start", "pause", "resume", "stop", "show", "get", "watch", "logs", "trace", "export"):
@@ -218,6 +218,7 @@ def _parser() -> argparse.ArgumentParser:
     native = commands.add_parser("native", help="Inspect or build the dependency-free native training core")
     native_commands = native.add_subparsers(dest="native_command", required=True)
     native_commands.add_parser("status")
+    native_commands.add_parser("self-test", help="Run a small deterministic in-process ABI self-test")
     native_build = native_commands.add_parser("build")
     native_build.add_argument("--output")
 
@@ -337,7 +338,7 @@ def _wait_for_status(client: DaemonClient, run_id: str, expected: set[str], time
     return latest
 
 
-def _doctor(root: Path) -> dict[str, Any]:
+def _doctor(root: Path, *, workspace_selected: bool) -> dict[str, Any]:
     from .backends.registry import BackendRegistry
     from .capabilities import CapabilityRegistry
     from .hardware import detect_hardware
@@ -355,8 +356,9 @@ def _doctor(root: Path) -> dict[str, Any]:
         "python_supported": supported_python,
         "platform_supported": supported_platform,
         "architecture_supported": supported_machine,
-        "workspace_exists": root.exists(),
-        "workspace_writable": os.access(root if root.exists() else root.parent, os.W_OK),
+        "workspace_selected": workspace_selected,
+        "workspace_exists": root.exists() if workspace_selected else None,
+        "workspace_writable": os.access(root if root.exists() else root.parent, os.W_OK) if workspace_selected else None,
         "core_backend_available": any(
             item["name"] in {"native", "numpy"} and item["available"]
             for item in capabilities["backends"]
@@ -365,7 +367,11 @@ def _doctor(root: Path) -> dict[str, Any]:
             item["name"] == "native" and item["available"] for item in capabilities["backends"]
         ),
     }
-    required_checks = {key: value for key, value in checks.items() if key != "native_core_available"}
+    required_checks = {
+        key: value
+        for key, value in checks.items()
+        if key not in {"native_core_available", "workspace_selected", "workspace_exists", "workspace_writable"}
+    }
     warnings = []
     if not checks["native_core_available"]:
         warnings.append("Native acceleration is unavailable; NumPy remains the Windows fallback")
@@ -398,7 +404,7 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
     if args.command == "version":
         return True, {"version": VERSION} if args.json else VERSION
     if args.command == "doctor":
-        return True, _doctor(root)
+        return True, _doctor(root, workspace_selected=args.workspace is not None)
     if args.command == "capabilities":
         from .backends.registry import BackendRegistry
         from .capabilities import CapabilityRegistry
@@ -431,40 +437,10 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .format_intelligence import advise_path
 
         return True, advise_path(args.path)
-    if args.command == "packs":
-        from .packs import (
-            PACK_ALGORITHMS,
-            add_pack_algorithm,
-            algorithm_pack_path,
-            algorithm_pack_table,
-            create_algorithm_pack,
-            delete_algorithm_pack,
-            get_algorithm_pack,
-            remove_pack_algorithm,
-        )
-
-        if args.pack_command == "list":
-            return True, {"path": str(algorithm_pack_path()), "packs": algorithm_pack_table()}
-        if args.pack_command == "path":
-            return True, {"path": str(algorithm_pack_path())}
-        if args.pack_command == "algorithms":
-            return True, {"algorithms": [{"name": name, **info} for name, info in PACK_ALGORITHMS.items()]}
-        if args.pack_command == "show":
-            return True, get_algorithm_pack(args.name)
-        if args.pack_command == "clone":
-            return True, create_algorithm_pack(args.name, base=args.base, label=args.label)
-        if args.pack_command == "add-algorithm":
-            return True, add_pack_algorithm(args.name, args.algorithm)
-        if args.pack_command == "remove-algorithm":
-            return True, remove_pack_algorithm(args.name, args.algorithm)
-        path = delete_algorithm_pack(args.name)
-        return True, {"deleted": args.name, "path": str(path)}
     if args.command == "execution":
-        from .hardware import detect_hardware
-        from .packs import list_algorithm_packs
+        from .hardware import AUTOMATIC_EXECUTION_POLICY, detect_hardware
 
         hardware = detect_hardware()
-        packs = list_algorithm_packs()
         return True, {
             "default_execution": "hybrid" if hardware["gpu_available"] else "cpu",
             "execution_targets": {
@@ -473,20 +449,14 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             },
             "gpu_available": bool(hardware["gpu_available"]),
             "accelerators": [*hardware["nvidia_gpus"], *hardware["accelerators"]],
-            "algorithm_packs": {
-                name: {
-                    "base": item["base"],
-                    "built_in": item["built_in"],
-                    "algorithms": list(item["algorithms"]),
-                    "data_workers": item["data_workers"],
-                    "prefetch": item["prefetch"],
-                    "stream_limit_mb": None if item["stream_limit"] >= 2**60 else item["stream_limit"] // 1024**2,
-                    "native_thread_fraction": item["native_thread_fraction"],
-                    "bulk_step_cap": item["bulk_step_cap"],
-                    "arena_mb": item["arena_bytes"] // 1024**2,
-                    "chunk_target_records": item["chunk_target_records"],
-                }
-                for name, item in packs.items()
+            "automatic_policy": {
+                "data_workers": AUTOMATIC_EXECUTION_POLICY["data_workers"],
+                "prefetch": AUTOMATIC_EXECUTION_POLICY["prefetch"],
+                "stream_limit_mb": AUTOMATIC_EXECUTION_POLICY["stream_limit"] // 1024**2,
+                "native_thread_fraction": AUTOMATIC_EXECUTION_POLICY["native_thread_fraction"],
+                "bulk_step_cap": AUTOMATIC_EXECUTION_POLICY["bulk_step_cap"],
+                "arena_mb": AUTOMATIC_EXECUTION_POLICY["arena_bytes"] // 1024**2,
+                "chunk_target_records": AUTOMATIC_EXECUTION_POLICY["chunk_target_records"],
             },
         }
     if args.command == "tune":
@@ -494,14 +464,12 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
         from .tuning import autotune_execution
 
         return True, autotune_execution(
-            args.profile or args.algorithm_pack,
             detect_hardware(),
             records=args.records,
             features=args.features,
             batch_size=args.batch_size,
             streaming=args.streaming,
             execution_target=args.execution,
-            algorithm_pack=args.algorithm_pack,
         )
     if args.command == "chunk-plan":
         from .planning import ContextChunkPlanner
@@ -515,6 +483,58 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
             test_percent=args.test_percent,
         )
         return True, planner.summary(args.records)
+    if args.command == "text" and args.text_command == "plan":
+        from .conversation_chunks import iter_conversation_chunks, write_conversation_chunks
+
+        chunks = iter_conversation_chunks(
+            args.path,
+            format=args.format,
+            encoding=args.encoding,
+            conversation_id=args.conversation_id,
+            maximum_characters=args.maximum_characters,
+            minimum_characters=args.minimum_characters,
+            topic_similarity_threshold=args.topic_similarity_threshold,
+            topic_window_messages=args.topic_window_messages,
+            topic_gap_seconds=args.topic_gap_seconds,
+        )
+        boundaries: Counter[str] = Counter()
+        preview: list[dict[str, Any]] = []
+        total_characters = 0
+        total_messages = 0
+        chunk_count = 0
+
+        def counted() -> Any:
+            nonlocal total_characters, total_messages, chunk_count
+            for chunk in chunks:
+                chunk_count += 1
+                total_characters += chunk.character_count
+                total_messages += len(chunk.messages)
+                boundaries[chunk.boundary] += 1
+                if len(preview) < max(0, args.preview):
+                    preview.append(chunk.to_dict())
+                yield chunk
+
+        output = None
+        if args.output:
+            output = str(write_conversation_chunks(counted(), args.output, overwrite=args.overwrite))
+        else:
+            for _ in counted():
+                pass
+        return True, {
+            "source": str(Path(args.path).expanduser().resolve()),
+            "format": args.format,
+            "chunks": chunk_count,
+            "messages": total_messages,
+            "characters": total_characters,
+            "boundaries": dict(sorted(boundaries.items())),
+            "preview": preview,
+            "output": output,
+            "writes": bool(output),
+            "contract": (
+                "message and conversation boundaries are preserved; topic shifts use a deterministic lexical "
+                "heuristic unless the Python API supplies its own detector"
+            ),
+        }
     if args.command == "dataset" and args.dataset_command == "doctor":
         from .workspace import Workspace
 
@@ -537,17 +557,20 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
                 "health": report["health"],
             }
     if args.command == "native":
-        from .native_core import build_native_core, native_core_status
+        from .native_core import build_native_core, native_core_self_test, native_core_status
 
         if args.native_command == "build":
             output = build_native_core(args.output)
             return True, {**native_core_status(), "built": str(output)}
+        if args.native_command == "self-test":
+            result = native_core_self_test()
+            return bool(result["ok"]), result
         return True, native_core_status()
     if args.command in {"plan", "train", "finetune"}:
         from .auto import AutoTrainer
 
         names = (
-            "target", "task", "backend", "architecture", "model_format", "profile", "execution", "algorithm_pack", "batch_size", "max_steps", "target_metric",
+            "target", "task", "backend", "architecture", "model_format", "execution", "batch_size", "max_steps", "target_metric",
             "learning_rate", "weight_decay", "hidden_layers", "precision", "data_mode", "cpu", "ram", "gpu", "threads",
             "data_workers", "prefetch", "seed", "evaluation_interval", "min_improvement",
             "degradation_margin", "degradation_patience", "early_stopping_patience",
@@ -610,7 +633,18 @@ def _local_command(args: argparse.Namespace, root: Path) -> tuple[bool, Any]:
 
 
 def _main(args: argparse.Namespace) -> int:
-    root = Path(args.workspace).expanduser().resolve()
+    from .workspace import default_library_workspace
+
+    workspace_commands = {
+        "rpc", "daemon", "serve", "mcp", "inspect", "dataset", "run", "infer", "report",
+        "plan", "train", "finetune", "migrate", "repair", "cleanup", "workspace", "approval",
+    }
+    if args.command in workspace_commands and args.workspace is None:
+        raise KernelyraError(
+            "This command needs an explicit --workspace PATH. Kernelyra will not create run state, "
+            "datasets, databases or checkpoints in an implicit location."
+        )
+    root = default_library_workspace() if args.workspace is None else Path(args.workspace).expanduser().resolve()
     if args.command == "rpc":
         from .protocol import run_stdio
 
@@ -699,9 +733,7 @@ def _main(args: argparse.Namespace) -> int:
                     batch_size=args.batch_size,
                     accept_batch_risk=args.accept_batch_risk,
                     max_steps=args.max_steps,
-                    profile=args.profile,
                     execution=args.execution,
-                    algorithm_pack=args.algorithm_pack,
                     cpu=args.cpu,
                     ram=args.ram,
                     gpu=args.gpu,

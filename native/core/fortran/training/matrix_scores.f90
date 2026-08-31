@@ -9,17 +9,22 @@ contains
     real(c_float), intent(in) :: row(*), weights(*), bias(*)
     real(c_float), intent(out) :: scores(*)
     integer(c_size_t) :: feature, category, weight_offset
+    real(c_float) :: value
 
-    ! Categories own disjoint score slots, so this loop can use the configured
-    ! OpenMP worker pool without a reduction or shared-write race.
-    !$omp parallel do if (classes * features >= 4096_c_size_t) schedule(static) private(feature, weight_offset)
+    ! This routine is invoked once per input row. Spawning an OpenMP team for
+    ! every row dominated wide multiclass batches. Accumulating one contiguous
+    ! weight column at a time exposes SIMD across classes and preserves the
+    ! original feature-order sum for every score.
     do category = 1_c_size_t, classes
       scores(category) = bias(category)
-      do feature = 1_c_size_t, features
-        weight_offset = (feature - 1_c_size_t) * classes
-        scores(category) = scores(category) + row(feature) * weights(weight_offset + category)
+    end do
+    do feature = 1_c_size_t, features
+      value = row(feature)
+      weight_offset = (feature - 1_c_size_t) * classes
+      !$omp simd
+      do category = 1_c_size_t, classes
+        scores(category) = scores(category) + value * weights(weight_offset + category)
       end do
     end do
-    !$omp end parallel do
   end subroutine kr_fortran_dense_scores_f32
 end module kernelyra_matrix_scores

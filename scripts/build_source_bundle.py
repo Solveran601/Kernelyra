@@ -35,7 +35,6 @@ ROOT_FILES = (
 SOURCE_DIRS = (
     ".github",
     "assets",
-    "benchmarks",
     "constraints",
     "examples",
     "native",

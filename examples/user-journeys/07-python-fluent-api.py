@@ -18,7 +18,6 @@ def plan_summary(plan: object) -> dict[str, object]:
         "architecture": plan.architecture,
         "model_format": plan.model_format,
         "execution": plan.execution,
-        "algorithm_pack": plan.algorithm_pack,
         "resources": {"cpu": plan.cpu, "ram": plan.ram, "gpu": plan.gpu, "threads": plan.threads},
         "batch_size": plan.batch_size,
         "data_mode": plan.data_mode,
@@ -59,7 +58,6 @@ def main() -> None:
     parser.add_argument("--workspace", type=Path, default=Path(".kernelyra-user-journeys"))
     parser.add_argument("--backend", default="auto", choices=("auto", "native", "numpy", "torch", "tensorflow"))
     parser.add_argument("--execution", default="cpu", choices=("auto", "cpu", "hybrid"))
-    parser.add_argument("--pack", default="balanced")
     parser.add_argument("--cpu", type=int, default=80)
     parser.add_argument("--ram", type=int, default=70)
     parser.add_argument("--threads", type=int, default=4)
@@ -75,7 +73,6 @@ def main() -> None:
         .target(args.target)
         .backend(args.backend)
         .execution(args.execution)
-        .pack(args.pack)
         .resources(cpu=args.cpu, ram=args.ram, gpu=0, threads=args.threads)
         .steps(args.steps)
     )

@@ -38,7 +38,7 @@ std::unordered_map<std::string, Format> registry() {
   add(formats, "table", "spreadsheet", "xls xlsx xlsm xlsb ods numbers wk1 wk2 wk3 wks dbf dif slk");
   add(formats, "text", "plain-text", "txt text log rst adoc org tex rtf");
   add(formats, "text", "markup", "md markdown html htm xhtml xml yaml yml toml ini cfg conf properties");
-  add(formats, "text", "source-code", "py pyw js mjs cjs ts tsx jsx java kt kts c cc cpp cxx h hpp cs go rs rb php swift scala sh bash zsh ps1 sql r lua dart pl pm vb fs fsx clj hs ex exs");
+  add(formats, "text", "source-code", "py pyw js mjs cjs ts tsx jsx java kt kts c cc cpp cxx h hpp cs go rs php scala sh bash zsh ps1 sql r lua dart pl pm vb fs fsx clj hs ex exs");
   add(formats, "document", "office", "doc docx dot dotx odt ott ppt pptx pps ppsx pot potx odp otp pages key epub mobi azw azw3 fb2");
   add(formats, "document", "pdf", "pdf xps oxps djvu ps eps");
   add(formats, "image", "raster", "png jpg jpeg jpe jfif gif bmp dib tif tiff webp heic heif avif ico cur jp2 j2k jpf jpx ppm pgm pbm pnm tga dds hdr exr raw cr2 nef arw dng raf orf rw2");

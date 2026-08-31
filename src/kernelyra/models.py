@@ -133,9 +133,7 @@ class RunConfig:
     model_format: str = "auto"
     name: str = "new-classifier"
     mode: str = "Новая модель"
-    profile: str = "auto"
     execution: str = "auto"
-    algorithm_pack: str = "balanced"
     priority: str = "normal"
     target_metric: float = 0.92
     batch_mode: str = "auto"
@@ -178,9 +176,7 @@ class RunInfo:
     architecture: str
     model_format: str
     mode: str
-    profile: str
     execution: str
-    algorithm_pack: str
     priority: str
     target_score: float
     batch_mode: str

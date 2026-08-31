@@ -1,6 +1,6 @@
 @{
     RootModule = 'Kernelyra.psm1'
-    ModuleVersion = '0.6.0'
+    ModuleVersion = '0.7.0'
     GUID = '3d0c17b9-37f3-4f58-b6a8-20a43f971df3'
     Author = 'Kernelyra contributors'
     CompanyName = 'Kernelyra'
@@ -20,13 +20,6 @@
         'Get-KernelyraNativeStatus',
         'Get-KernelyraCpuTuning',
         'Get-KernelyraDataContract',
-        'Get-KernelyraPack',
-        'Get-KernelyraPackAlgorithm',
-        'Get-KernelyraPackTablePath',
-        'Copy-KernelyraPack',
-        'Add-KernelyraPackAlgorithm',
-        'Remove-KernelyraPackAlgorithm',
-        'Remove-KernelyraPack',
         'Get-KernelyraRunStatus',
         'Get-KernelyraChunkPlan',
         'Invoke-Kernelyra'
@@ -36,6 +29,7 @@
     AliasesToExport = @()
     PrivateData = @{
         PSData = @{
+            Prerelease = 'b1'
             Tags = @('Kernelyra', 'ML', 'tabular', 'training')
             ProjectUri = 'https://github.com/Solveran601/Kernelyra'
             LicenseUri = 'https://github.com/Solveran601/Kernelyra/blob/main/LICENSE'

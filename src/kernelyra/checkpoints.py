@@ -10,21 +10,22 @@ from typing import Any
 
 from .errors import RunError
 
+_CHECKPOINT_KINDS = {"none", "best", "last"}
 _CHECKPOINT_FINAL_KINDS = {"best", "last"}
 
 
 def resolve_checkpoint_policy(policy: dict[str, Any] | None = None) -> dict[str, str]:
-    """Validate the durable checkpoint selection policy for one run."""
-    values = {"resume": "last", "final": "best", "rollback": "best", **(policy or {})}
+    """Validate an explicitly chosen persistent-checkpoint policy for one run."""
+    values = {"resume": "none", "final": "none", "rollback": "none", **(policy or {})}
     resume = str(values["resume"]).strip().lower()
     final = str(values["final"]).strip().lower()
     rollback = str(values["rollback"]).strip().lower()
-    if resume not in _CHECKPOINT_FINAL_KINDS:
-        raise RunError("checkpoint resume must be 'last' or 'best'")
-    if final not in _CHECKPOINT_FINAL_KINDS:
-        raise RunError("checkpoint final must be 'best' or 'last'")
-    if rollback != "best":
-        raise RunError("checkpoint rollback must remain 'best' for Model Guard safety")
+    if resume not in _CHECKPOINT_KINDS:
+        raise RunError("checkpoint resume must be 'none', 'last' or 'best'")
+    if final not in _CHECKPOINT_KINDS:
+        raise RunError("checkpoint final must be 'none', 'best' or 'last'")
+    if rollback not in {"none", "best"}:
+        raise RunError("checkpoint rollback must be 'none' or 'best'")
     return {"resume": resume, "final": final, "rollback": rollback}
 
 
@@ -33,6 +34,9 @@ class CheckpointManager:
 
     def __init__(self, root: Path):
         self.root = root
+
+    def _ensure_root(self) -> None:
+        """Create checkpoint storage only immediately before an opted-in write."""
         self.root.mkdir(parents=True, exist_ok=True)
 
     def best_path(self, run_id: str) -> Path:
@@ -69,6 +73,7 @@ class CheckpointManager:
         return path.with_suffix(path.suffix + ".json")
 
     def record(self, path: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_root()
         if path.parent.resolve() != self.root.resolve() or not path.is_file():
             raise RunError("Checkpoint path is outside managed storage")
         payload = {
@@ -107,6 +112,7 @@ class CheckpointManager:
         return {str(key): value for key, value in metadata.items()}
 
     def promote(self, source: Path, destination: Path, metadata: dict[str, Any]) -> dict[str, Any]:
+        self._ensure_root()
         if source.parent.resolve() != self.root.resolve() or destination.parent.resolve() != self.root.resolve():
             raise RunError("Checkpoint promotion escaped managed storage")
         pending = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.pending")

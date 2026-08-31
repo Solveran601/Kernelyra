@@ -15,7 +15,6 @@ namespace kernelyra {
 using Transport = std::function<std::string(const std::string&)>;
 
 enum class ExecutionTarget { automatic, cpu, hybrid };
-enum class AlgorithmPack { careful, balanced, throughput, maximum };
 
 inline const char* execution_target_name(ExecutionTarget value) {
   switch (value) {
@@ -24,16 +23,6 @@ inline const char* execution_target_name(ExecutionTarget value) {
     case ExecutionTarget::hybrid: return "hybrid";
   }
   return "auto";
-}
-
-inline const char* algorithm_pack_name(AlgorithmPack value) {
-  switch (value) {
-    case AlgorithmPack::careful: return "careful";
-    case AlgorithmPack::balanced: return "balanced";
-    case AlgorithmPack::throughput: return "throughput";
-    case AlgorithmPack::maximum: return "maximum";
-  }
-  return "balanced";
 }
 
 class Config {
@@ -67,10 +56,6 @@ public:
   Config& execution(ExecutionTarget value) { return execution(execution_target_name(value)); }
   Config& cpu_only() { return execution(ExecutionTarget::cpu); }
   Config& hybrid() { return execution(ExecutionTarget::hybrid); }
-  Config& algorithm_pack(const std::string& value) { return put("algorithm_pack", quote(value)); }
-  Config& algorithm_pack(AlgorithmPack value) { return algorithm_pack(algorithm_pack_name(value)); }
-  /* Legacy persisted profiles are accepted for compatibility. Prefer algorithm_pack(). */
-  Config& profile(const std::string& value) { return put("profile", quote(value)); }
   Config& goal(double value) { return put("target_metric", std::to_string(value)); }
   Config& steps(unsigned long long value) { return put("max_steps", std::to_string(value)); }
   Config& batch(unsigned value, bool accept_risk = false) {

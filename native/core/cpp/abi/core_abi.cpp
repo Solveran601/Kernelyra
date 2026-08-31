@@ -101,7 +101,8 @@ void kr_fortran_regression_train_f32(
 void kr_fortran_multiclass_train_f32(
     const float* x, const float* y, size_t rows, size_t features, size_t classes,
     float* weights, float* bias, float learning_rate, float decay,
-    float* probabilities, float* gradient, float* bias_gradient, float* loss, int* status);
+    float* probabilities, float* gradient, float* bias_gradient,
+    int report_loss, float* loss, int* status);
 #endif
 #if KR_HAS_RUST_POLICY
 uint64_t kr_rust_policy_mix_u64(uint64_t value);
@@ -530,7 +531,7 @@ NumericCsv* load_numeric_csv(const char* path_utf8, const char* target_utf8, cha
 #endif
     {
 #if defined(_OPENMP)
-#pragma omp parallel for if(dataset->rows * dataset->features >= 1048576U) schedule(static)
+#pragma omp parallel for if(dataset->features != 0U && dataset->rows >= 1048576U / dataset->features) schedule(static)
 #endif
       for (ptrdiff_t row = 0; row < static_cast<ptrdiff_t>(dataset->rows); ++row) {
         for (size_t feature = 0; feature < dataset->features; ++feature) {
@@ -829,6 +830,29 @@ void update_weights(
   update_scalar(weights, gradient, learning_rate, inverse, decay, features);
 }
 
+bool workload_at_least(size_t rows, size_t features, size_t multiplier, size_t threshold) {
+  size_t values = 0U;
+  if (multiplier == 0U || kr_c_core_matrix_elements(rows, features, &values) == 0) return false;
+  if (values > std::numeric_limits<size_t>::max() / multiplier) return false;
+  return values * multiplier >= threshold;
+}
+
+void multiclass_scores(
+    const float* row, size_t features, size_t classes, const float* weights,
+    const float* bias, float* scores) {
+  std::copy(bias, bias + classes, scores);
+  for (size_t feature = 0U; feature < features; ++feature) {
+    const float value = row[feature];
+    const float* weight_column = weights + feature * classes;
+#if defined(_OPENMP)
+#pragma omp simd
+#endif
+    for (ptrdiff_t category = 0; category < static_cast<ptrdiff_t>(classes); ++category) {
+      scores[static_cast<size_t>(category)] += value * weight_column[static_cast<size_t>(category)];
+    }
+  }
+}
+
 bool supported_model_abi(uint32_t version) {
   // ABI 6-9 add standalone memory exports; kr_model_config keeps its ABI-5
   // layout.  Accepting all of them preserves released Python model callers.
@@ -872,7 +896,7 @@ bool parallel_gradient_fits(const Model& model, size_t values, size_t rows) {
 
 bool prefer_fused_simd(size_t rows, size_t features) {
 #if KR_X86_GNU_SIMD
-  return rows * features >= 65536U && runtime_avx2_fma();
+  return workload_at_least(rows, features, 1U, 65536U) && runtime_avx2_fma();
 #else
   (void)rows;
   (void)features;
@@ -1027,7 +1051,7 @@ int train_binary(
     Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
 #if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features >= 4194304U &&
+  if (model.config.threads > 1 && workload_at_least(rows, features, 1U, 4194304U) &&
       parallel_gradient_fits(model, features, rows)) {
     return train_binary_parallel(model, x, y, rows, loss, report_loss);
   }
@@ -1074,7 +1098,7 @@ int train_regression(
     Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
 #if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features >= 4194304U &&
+  if (model.config.threads > 1 && workload_at_least(rows, features, 1U, 4194304U) &&
       parallel_gradient_fits(model, features, rows)) {
     return train_regression_parallel(model, x, y, rows, loss, report_loss);
   }
@@ -1117,7 +1141,8 @@ int train_regression(
 }
 
 #if defined(_OPENMP)
-int train_multiclass_parallel(Model& model, const float* x, const float* y, size_t rows, float* loss) {
+int train_multiclass_parallel(
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
   const size_t classes = model.config.classes;
   const size_t weight_values = model.weights.size();
@@ -1139,27 +1164,29 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
         invalid_target.store(true, std::memory_order_relaxed);
         continue;
       }
-      float maximum = -std::numeric_limits<float>::infinity();
-      for (size_t category = 0; category < classes; ++category) {
-        float value = model.bias[category];
-        for (size_t feature = 0; feature < features; ++feature) {
-          value += row[feature] * model.weights[feature * classes + category];
-        }
-        scratch[category] = value;
-        maximum = std::max(maximum, value);
-      }
+      multiclass_scores(
+          row, features, classes, model.weights.data(), model.bias.data(), scratch);
+      const float maximum = *std::max_element(scratch, scratch + classes);
       float denominator = 0.0F;
       for (size_t category = 0; category < classes; ++category) {
         scratch[category] = std::exp(scratch[category] - maximum);
         denominator += scratch[category];
       }
-      const float truth_probability = scratch[truth] / denominator;
-      total_loss -= std::log(std::max(1.0e-7F, truth_probability));
+      if (report_loss) {
+        const float truth_probability = scratch[truth] / denominator;
+        total_loss -= std::log(std::max(1.0e-7F, truth_probability));
+      }
       for (size_t category = 0; category < classes; ++category) {
         const float error = scratch[category] / denominator - (category == truth ? 1.0F : 0.0F);
+        scratch[category] = error;
         bias_gradient[category] += error;
-        for (size_t feature = 0; feature < features; ++feature) {
-          gradient[feature * classes + category] += row[feature] * error;
+      }
+      for (size_t feature = 0; feature < features; ++feature) {
+        const float value = row[feature];
+        float* gradient_column = gradient + feature * classes;
+#pragma omp simd
+        for (ptrdiff_t category = 0; category < static_cast<ptrdiff_t>(classes); ++category) {
+          gradient_column[static_cast<size_t>(category)] += value * scratch[static_cast<size_t>(category)];
         }
       }
     }
@@ -1190,18 +1217,19 @@ int train_multiclass_parallel(Model& model, const float* x, const float* y, size
   for (size_t category = 0; category < classes; ++category) {
     model.bias[category] -= model.config.learning_rate * model.bias_gradient[category] * inverse;
   }
-  *loss = static_cast<float>(total_loss / static_cast<double>(rows));
+  *loss = report_loss ? static_cast<float>(total_loss / static_cast<double>(rows)) : 0.0F;
   return std::isfinite(*loss) ? 1 : fail("parallel multiclass loss became non-finite");
 }
 #endif
 
-int train_multiclass(Model& model, const float* x, const float* y, size_t rows, float* loss) {
+int train_multiclass(
+    Model& model, const float* x, const float* y, size_t rows, float* loss, bool report_loss) {
   const size_t features = model.config.features;
   const size_t classes = model.config.classes;
 #if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features * classes >= 131072U &&
+  if (model.config.threads > 1 && workload_at_least(rows, features, classes, 131072U) &&
       parallel_gradient_fits(model, model.weights.size(), rows)) {
-    return train_multiclass_parallel(model, x, y, rows, loss);
+    return train_multiclass_parallel(model, x, y, rows, loss, report_loss);
   }
 #endif
 #if KR_HAS_FORTRAN_NUMERIC
@@ -1211,17 +1239,19 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
     kr_fortran_multiclass_train_f32(
         x, y, rows, features, classes, model.weights.data(), model.bias.data(),
         model.config.learning_rate, model.config.weight_decay, model.scratch.data(),
-        model.gradient.data(), model.bias_gradient.data(), loss, &status);
+        model.gradient.data(), model.bias_gradient.data(), report_loss ? 1 : 0, loss, &status);
     if (status == 1) return fail("multiclass target is outside configured class range");
     if (status == 3) return fail("Fortran multiclass pre-update guard rejected the batch");
-    if (status != 0 || !std::isfinite(*loss)) return fail("Fortran multiclass update became non-finite");
+    if (status != 0 || (report_loss && !std::isfinite(*loss))) {
+      return fail("Fortran multiclass update became non-finite");
+    }
     return 1;
   }
 #endif
 #if defined(_OPENMP)
-  if (model.config.threads > 1 && rows * features >= 1048576U &&
+  if (model.config.threads > 1 && workload_at_least(rows, features, 1U, 1048576U) &&
       parallel_gradient_fits(model, model.weights.size(), rows)) {
-    return train_multiclass_parallel(model, x, y, rows, loss);
+    return train_multiclass_parallel(model, x, y, rows, loss, report_loss);
   }
 #endif
   std::fill(model.gradient.begin(), model.gradient.end(), 0.0F);
@@ -1229,15 +1259,9 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
   double total_loss = 0.0;
   for (size_t row_index = 0; row_index < rows; ++row_index) {
     const float* row = x + row_index * features;
-    float maximum = -std::numeric_limits<float>::infinity();
-    for (size_t category = 0; category < classes; ++category) {
-      float value = model.bias[category];
-      for (size_t feature = 0; feature < features; ++feature) {
-        value += row[feature] * model.weights[feature * classes + category];
-      }
-      model.scratch[category] = value;
-      maximum = std::max(maximum, value);
-    }
+    multiclass_scores(
+        row, features, classes, model.weights.data(), model.bias.data(), model.scratch.data());
+    const float maximum = *std::max_element(model.scratch.begin(), model.scratch.end());
     float denominator = 0.0F;
     for (size_t category = 0; category < classes; ++category) {
       model.scratch[category] = std::exp(model.scratch[category] - maximum);
@@ -1245,13 +1269,23 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
     }
     const size_t truth = static_cast<size_t>(std::max(0.0F, y[row_index]));
     if (truth >= classes) return fail("multiclass target is outside configured class range");
-    const float truth_probability = model.scratch[truth] / denominator;
-    total_loss -= std::log(std::max(1.0e-7F, truth_probability));
+    if (report_loss) {
+      const float truth_probability = model.scratch[truth] / denominator;
+      total_loss -= std::log(std::max(1.0e-7F, truth_probability));
+    }
     for (size_t category = 0; category < classes; ++category) {
       const float error = model.scratch[category] / denominator - (category == truth ? 1.0F : 0.0F);
+      model.scratch[category] = error;
       model.bias_gradient[category] += error;
-      for (size_t feature = 0; feature < features; ++feature) {
-        model.gradient[feature * classes + category] += row[feature] * error;
+    }
+    for (size_t feature = 0; feature < features; ++feature) {
+      const float value = row[feature];
+      float* gradient_column = model.gradient.data() + feature * classes;
+#if defined(_OPENMP)
+#pragma omp simd
+#endif
+      for (ptrdiff_t category = 0; category < static_cast<ptrdiff_t>(classes); ++category) {
+        gradient_column[static_cast<size_t>(category)] += value * model.scratch[static_cast<size_t>(category)];
       }
     }
   }
@@ -1263,7 +1297,7 @@ int train_multiclass(Model& model, const float* x, const float* y, size_t rows, 
   for (size_t category = 0; category < classes; ++category) {
     model.bias[category] -= model.config.learning_rate * model.bias_gradient[category] * inverse;
   }
-  *loss = static_cast<float>(total_loss / static_cast<double>(rows));
+  *loss = report_loss ? static_cast<float>(total_loss / static_cast<double>(rows)) : 0.0F;
   return std::isfinite(*loss) ? 1 : fail("multiclass loss became non-finite");
 }
 
@@ -1272,7 +1306,7 @@ int train_model_step(
   const int outcome = model.config.task == KR_TASK_BINARY
       ? train_binary(model, x, y, rows, loss, report_loss)
       : model.config.task == KR_TASK_MULTICLASS
-          ? train_multiclass(model, x, y, rows, loss)
+          ? train_multiclass(model, x, y, rows, loss, report_loss)
           : train_regression(model, x, y, rows, loss, report_loss);
   if (outcome != 0 && ((report_loss && !std::isfinite(*loss)) || !model_is_finite(model))) {
     return fail("native update rejected: non-finite parameters or loss");
@@ -1280,12 +1314,12 @@ int train_model_step(
   return outcome;
 }
 
-int train_random_step_impl(
-    Model& model, const float* x, const float* y, size_t rows, size_t batch_size,
-    float* loss, bool report_loss) {
-  if (x == nullptr || y == nullptr || loss == nullptr || rows == 0 ||
-      batch_size == 0 || batch_size > 1048576U) {
-    return fail("invalid native random train_step arguments");
+// The bulk API validates dimensions and reserves these buffers once, then
+// reuses them for every update.  This keeps the hot loop allocation-free and
+// avoids re-running the Rust/C batch-shape planning on an unchanged batch.
+int prepare_random_batch(Model& model, size_t rows, size_t batch_size) {
+  if (rows == 0 || batch_size == 0 || batch_size > 1048576U) {
+    return fail("invalid native random batch dimensions");
   }
   const size_t features = model.config.features;
   kr_c_batch_contract batch_contract{};
@@ -1299,13 +1333,16 @@ int train_random_step_impl(
   } catch (const std::bad_alloc&) {
     return fail("native random batch does not fit in memory");
   }
+  return 1;
+}
+
+int train_random_step_prepared(
+    Model& model, const float* x, const float* y, size_t rows, size_t batch_size,
+    float* loss, bool report_loss) {
+  const size_t features = model.config.features;
   bool sampled_by_rust = false;
 #if KR_HAS_RUST_POLICY
-  size_t planned_values = 0U;
-  size_t planned_bytes = 0U;
   if (component_enabled(KR_COMPONENT_RUST_POLICY) &&
-      kr_rust_policy_plan_batch(rows, features, batch_size, &planned_values, &planned_bytes) == batch_size &&
-      planned_values == batch_contract.batch_elements && planned_bytes == batch_contract.batch_bytes &&
       kr_rust_policy_sample_indices(
           rows, batch_size, &model.rng_state, model.batch_indices.data()) == batch_size) {
     model.execution_mask |= KR_EXECUTION_RUST_POLICY;
@@ -1336,6 +1373,16 @@ int train_random_step_impl(
     }
   }
   return train_model_step(model, model.batch_x.data(), model.batch_y.data(), batch_size, loss, report_loss);
+}
+
+int train_random_step_impl(
+    Model& model, const float* x, const float* y, size_t rows, size_t batch_size,
+    float* loss, bool report_loss) {
+  if (x == nullptr || y == nullptr || loss == nullptr) {
+    return fail("invalid native random train_step arguments");
+  }
+  if (!prepare_random_batch(model, rows, batch_size)) return 0;
+  return train_random_step_prepared(model, x, y, rows, batch_size, loss, report_loss);
 }
 
 }  // namespace
@@ -1503,7 +1550,7 @@ void kr_memory_normalize_f32(
   }
 #endif
 #if defined(_OPENMP)
-#pragma omp parallel for if(rows * features >= 1048576U) schedule(static)
+#pragma omp parallel for if(workload_at_least(rows, features, 1U, 1048576U)) schedule(static)
 #endif
   for (ptrdiff_t row = 0; row < static_cast<ptrdiff_t>(rows); ++row) {
     for (size_t feature = 0; feature < features; ++feature) {
@@ -1545,7 +1592,7 @@ int kr_preprocess_f32(
   }
 #endif
 #if defined(_OPENMP)
-#pragma omp parallel for if(rows * features >= 1048576U) schedule(static) reduction(+:repaired)
+#pragma omp parallel for if(workload_at_least(rows, features, 1U, 1048576U)) schedule(static) reduction(+:repaired)
 #endif
   for (ptrdiff_t row = 0; row < static_cast<ptrdiff_t>(rows); ++row) {
     const size_t offset = static_cast<size_t>(row) * features;
@@ -1935,6 +1982,13 @@ void* kr_model_create(const kr_model_config* config) {
     fail("class count is outside the supported range");
     return nullptr;
   }
+  kr_c_model_contract model_contract{};
+  constexpr size_t maximum_model_values = 64U * 1024U * 1024U;
+  if (kr_c_core_model_contract_make(config->features, classes, &model_contract) == 0 ||
+      model_contract.weight_elements > maximum_model_values) {
+    fail("native model shape exceeds the bounded float32 weight-table limit");
+    return nullptr;
+  }
   Model* model = new (std::nothrow) Model();
   if (model == nullptr) {
     fail("native model allocation failed");
@@ -1942,7 +1996,7 @@ void* kr_model_create(const kr_model_config* config) {
   }
   try {
     model->config = *config;
-    model->weights.resize(static_cast<size_t>(config->features) * classes);
+    model->weights.resize(model_contract.weight_elements);
     model->bias.assign(classes, 0.0F);
     model->gradient.resize(model->weights.size());
     model->bias_gradient.resize(classes);
@@ -1985,13 +2039,16 @@ int kr_model_train_random_steps(
     size_t batch_size,
     size_t steps,
     float* loss) {
-  if (steps == 0 || steps > 1000000U) return fail("native random train step count is outside bounds");
+  if (x == nullptr || y == nullptr || loss == nullptr || steps == 0 || steps > 1000000U) {
+    return fail("invalid native random train_steps arguments");
+  }
   last_error.clear();
   Model* model = static_cast<Model*>(handle);
   if (!valid_model(model)) return fail("invalid native random train_steps model");
+  if (!prepare_random_batch(*model, rows, batch_size)) return 0;
   for (size_t step = 0; step < steps; ++step) {
     const bool report_loss = step + 1U == steps;
-    if (!train_random_step_impl(*model, x, y, rows, batch_size, loss, report_loss)) return 0;
+    if (!train_random_step_prepared(*model, x, y, rows, batch_size, loss, report_loss)) return 0;
   }
   return 1;
 }
@@ -2017,27 +2074,26 @@ int kr_model_predict(const void* handle, const float* x, size_t rows, float* out
   if (!valid_model(model) || x == nullptr || output == nullptr) return fail("invalid native predict arguments");
   const size_t features = model->config.features;
   const size_t classes = model->config.task == KR_TASK_MULTICLASS ? model->config.classes : 1U;
-  if (output_values < rows * classes) return fail("native predict output buffer is too small");
+  if (rows == 0U) return 1;
+  size_t required_output_values = 0U;
+  if (kr_c_core_matrix_elements(rows, classes, &required_output_values) == 0 ||
+      output_values < required_output_values) {
+    return fail("native predict output buffer is too small");
+  }
   for (size_t row_index = 0; row_index < rows; ++row_index) {
     const float* row = x + row_index * features;
     if (model->config.task == KR_TASK_MULTICLASS) {
-      float maximum = -std::numeric_limits<float>::infinity();
-      for (size_t category = 0; category < classes; ++category) {
-        float value = model->bias[category];
-        for (size_t feature = 0; feature < features; ++feature) {
-          value += row[feature] * model->weights[feature * classes + category];
-        }
-        output[row_index * classes + category] = value;
-        maximum = std::max(maximum, value);
-      }
+      float* scores = output + row_index * classes;
+      multiclass_scores(row, features, classes, model->weights.data(), model->bias.data(), scores);
+      const float maximum = *std::max_element(scores, scores + classes);
       float denominator = 0.0F;
       for (size_t category = 0; category < classes; ++category) {
-        float& value = output[row_index * classes + category];
+        float& value = scores[category];
         value = std::exp(value - maximum);
         denominator += value;
       }
       for (size_t category = 0; category < classes; ++category) {
-        output[row_index * classes + category] /= denominator;
+        scores[category] /= denominator;
       }
     } else {
       float value = dot(row, model->weights.data(), features) + model->bias[0];

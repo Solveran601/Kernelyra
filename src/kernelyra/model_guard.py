@@ -6,6 +6,8 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+from .quality import QualityGate
+
 
 def assess_trend(
     scores: Sequence[float],
@@ -43,3 +45,66 @@ def assess_trend(
         "consecutive_below_best": consecutive_below_best,
         "restore_recommended": restore,
     }
+
+
+class ModelGuard:
+    """Side-effect-free public Model Guard evaluator.
+
+    The runtime uses the same finite-value and trend rules. This facade lets
+    an application inspect its own validation loop before deciding whether to
+    persist a checkpoint or stop. It never creates, restores, or deletes a
+    model by itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        degradation_margin: float = .03,
+        degradation_patience: int = 3,
+        baseline_score: float | None = None,
+    ):
+        margin = float(degradation_margin)
+        if not math.isfinite(margin) or margin < 0:
+            raise ValueError("degradation_margin must be a finite number greater than or equal to zero")
+        patience = int(degradation_patience)
+        if patience < 1:
+            raise ValueError("degradation_patience must be at least one")
+        if baseline_score is not None and not math.isfinite(float(baseline_score)):
+            raise ValueError("baseline_score must be finite when provided")
+        self.degradation_margin = margin
+        self.degradation_patience = patience
+        self.baseline_score = float(baseline_score) if baseline_score is not None else None
+
+    def inspect(
+        self,
+        *,
+        score: float,
+        loss: float,
+        metrics: dict[str, Any],
+        best_score: float,
+        scores: Sequence[float] = (),
+    ) -> dict[str, Any]:
+        """Combine finite-metric and bounded score-trend evidence.
+
+        ``scores`` is caller-owned history. The method returns evidence only;
+        callers choose their checkpoint policy and any response to an alert.
+        """
+        quality = QualityGate(
+            degradation_margin=self.degradation_margin,
+            baseline_score=self.baseline_score,
+        ).inspect(score=score, loss=loss, metrics=metrics, best_score=best_score)
+        trend = assess_trend(
+            scores,
+            best_score=best_score,
+            degradation_margin=self.degradation_margin,
+            degradation_patience=self.degradation_patience,
+            baseline_score=self.baseline_score,
+        )
+        status = "invalid" if quality["status"] == "invalid" else trend["status"]
+        return {
+            "status": status,
+            "restore_recommended": bool(trend["restore_recommended"]),
+            "quality": quality,
+            "trend": trend,
+            "contract": "inspection only; this object never changes checkpoints or model parameters",
+        }

@@ -103,8 +103,7 @@ int kr_c_execution_plan_make(
       request->logical_cpu_threads == 0U || request->record_bytes == 0U ||
       request->available_memory_bytes == 0U || request->cpu_percent == 0U ||
       request->cpu_percent > 100U || request->ram_percent == 0U || request->ram_percent > 100U ||
-      request->gpu_percent > 100U || request->execution > KR_C_EXECUTION_HYBRID ||
-      request->algorithm_pack > KR_C_PACK_MAXIMUM) {
+      request->gpu_percent > 100U || request->execution > KR_C_EXECUTION_HYBRID) {
     return request != NULL && request->abi_version != KR_ABI_VERSION
         ? KR_C_POLICY_INCOMPATIBLE_ABI : KR_C_POLICY_INVALID_ARGUMENT;
   }
@@ -114,20 +113,9 @@ int kr_c_execution_plan_make(
   }
   if (request->requested_threads > request->logical_cpu_threads) return KR_C_POLICY_INVALID_ARGUMENT;
 
-  switch (request->algorithm_pack) {
-    case KR_C_PACK_CAREFUL:
-      reserve = 16U; minimum_percent = 50U; maximum_percent = 110U; worker_cap = 1U;
-      plan->prefetch = 1U; plan->aggression_percent = 0U; break;
-    case KR_C_PACK_BALANCED:
-      reserve = 10U; minimum_percent = 70U; maximum_percent = 135U; worker_cap = 2U;
-      plan->prefetch = 2U; plan->aggression_percent = 35U; break;
-    case KR_C_PACK_THROUGHPUT:
-      reserve = 7U; minimum_percent = 90U; maximum_percent = 190U; worker_cap = 4U;
-      plan->prefetch = 3U; plan->aggression_percent = 70U; break;
-    default:
-      reserve = 5U; minimum_percent = 90U; maximum_percent = 280U; worker_cap = 8U;
-      plan->prefetch = 4U; plan->aggression_percent = 100U; break;
-  }
+  /* One automatic policy: the caller owns every resource ceiling. */
+  reserve = 10U; minimum_percent = 70U; maximum_percent = 135U; worker_cap = 2U;
+  plan->prefetch = 2U; plan->aggression_percent = 35U;
   target = kr_c_records_from_memory(
       request->available_memory_bytes, request->ram_percent, request->record_bytes, reserve);
   if (request->dataset_records != 0U && request->dataset_records < target) {

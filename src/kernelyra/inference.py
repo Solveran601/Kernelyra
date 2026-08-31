@@ -95,7 +95,6 @@ def run_inference_check(workspace: Workspace, run_id: str, requests: int = 200) 
     config = BackendConfig(
         x=x,
         y=y,
-        profile=run.profile,
         seed=run.seed,
         task_type=run.objective,
         resource_limits={

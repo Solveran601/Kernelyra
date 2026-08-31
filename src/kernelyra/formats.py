@@ -38,7 +38,7 @@ _GROUPS: tuple[tuple[str, str, str, str, str, bool, str | None, str], ...] = (
     ),
     (
         "source-code", "text", "dataset", "source-text", "extract", True, None,
-        "py pyw pyx pxd pyi c h cc cpp cxx c++ hpp hxx hh inl m mm rs go java kt kts scala sc groovy gradle cs fs fsx vb swift dart js jsx mjs cjs ts tsx php phtml rb rake gemspec sh bash zsh fish ps1 psm1 psd1 bat cmd lua r jl zig f f77 f90 f95 f03 f08 for ftn asm s nasm masm v vhd vhdl sv svh cl cu cuh metal sol move ex exs erl hrl hs lhs ml mli clj cljs cljc edn lisp lsp scm ss rkt tcl awk sed cob cbl pas pp d nim crystal cr vala"
+        "py pyw pyx pxd pyi c h cc cpp cxx c++ hpp hxx hh inl m mm rs go java kt kts scala sc groovy gradle cs fs fsx vb dart js jsx mjs cjs ts tsx php phtml sh bash zsh fish ps1 psm1 psd1 bat cmd lua r jl zig f f77 f90 f95 f03 f08 for ftn asm s nasm masm v vhd vhdl sv svh cl cu cuh metal sol move ex exs erl hrl hs lhs ml mli clj cljs cljc edn lisp lsp scm ss rkt tcl awk sed cob cbl pas pp d nim crystal cr vala"
     ),
     (
         "structured-text", "table", "dataset", "structured-reader", "extract", True, None,

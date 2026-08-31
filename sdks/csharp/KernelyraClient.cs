@@ -13,7 +13,6 @@ public sealed class Config
     public Config Backend(string value) => Set("backend", value);
     public Config Architecture(string value) => Set("architecture", value);
     public Config ModelFormat(string value) => Set("model_format", value);
-    public Config Profile(string value) => Set("profile", value);
     public Config Goal(double value) => Set("target_metric", value);
     public Config Steps(long value) => Set("max_steps", value);
     public Config Batch(int value, bool acceptRisk = false) => Set("batch_size", value).Set("accept_batch_risk", acceptRisk);

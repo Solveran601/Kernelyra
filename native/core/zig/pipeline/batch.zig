@@ -1,5 +1,6 @@
 //! One-pass gathering of features and targets for random native minibatches.
 
+const std = @import("std");
 const shape = @import("../memory/shape.zig");
 
 pub fn gatherBatchF32(
@@ -22,10 +23,11 @@ pub fn gatherBatchF32(
         if (input_row >= source_rows) return false;
         const input_offset = input_row * features;
         const output_offset = output_row * features;
-        var feature: usize = 0;
-        while (feature < features) : (feature += 1) {
-            destination[output_offset + feature] = source[input_offset + feature];
-        }
+        std.mem.copyForwards(
+            f32,
+            destination[output_offset..][0..features],
+            source[input_offset..][0..features],
+        );
         destination_targets[output_row] = targets[input_row];
     }
     return true;

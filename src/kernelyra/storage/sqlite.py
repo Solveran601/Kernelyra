@@ -101,7 +101,7 @@ class SQLiteStorage:
             "evaluation_interval": None, "min_improvement": 0.0005,
             "degradation_margin": 0.03, "degradation_patience": 3,
             "early_stopping_patience": 18, "target_patience": 3,
-            "checkpoint_policy": {"resume": "last", "final": "best", "rollback": "best"},
+            "checkpoint_policy": {"resume": "none", "final": "none", "rollback": "none"},
             "data_contract": {}, "split_policy": {}, "chunk_policy": {},
         }
         merged = {**defaults, **raw}
@@ -109,14 +109,7 @@ class SQLiteStorage:
         merged.setdefault("message", "Импортировано из Kernelyra 0.1")
         merged.setdefault("created_at", time.time())
         merged.setdefault("priority", "normal")
-        merged.setdefault("profile", "eco")
         merged.setdefault("execution", "cpu")
-        merged.setdefault(
-            "algorithm_pack",
-            {"eco": "careful", "low-memory": "careful", "performance": "throughput", "workstation": "maximum"}.get(
-                str(merged["profile"]), "balanced"
-            ),
-        )
         merged.setdefault("max_steps", 1000)
         merged.setdefault("cpu", 30)
         merged.setdefault("ram", 35)
@@ -179,6 +172,41 @@ class SQLiteStorage:
         with self.transaction() as db:
             rows = db.execute("SELECT actor,action,payload,created_at FROM action_log ORDER BY id DESC LIMIT ?", (max(1, min(1000, limit)),)).fetchall()
         return [{"actor": actor, "action": action, "payload": json.loads(payload), "created_at": created_at} for actor, action, payload, created_at in rows]
+
+    def actions_for_run(self, run_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Return bounded newest-first audit events belonging to one run.
+
+        ``action_log`` predates a dedicated ``run_id`` column, so filtering is
+        performed on its JSON payload. This keeps old explicit workspaces
+        readable without a destructive schema rewrite.
+        """
+        safe_limit = max(1, min(1000, int(limit)))
+        events: list[dict[str, Any]] = []
+        batch_size = max(64, min(1000, safe_limit * 4))
+        latest_id: int | None = None
+        with self.transaction() as db:
+            while len(events) < safe_limit:
+                if latest_id is None:
+                    rows = db.execute(
+                        "SELECT id,actor,action,payload,created_at FROM action_log ORDER BY id DESC LIMIT ?",
+                        (batch_size,),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT id,actor,action,payload,created_at FROM action_log WHERE id<? ORDER BY id DESC LIMIT ?",
+                        (latest_id, batch_size),
+                    ).fetchall()
+                if not rows:
+                    break
+                latest_id = int(rows[-1][0])
+                for _, actor, action, payload, created_at in rows:
+                    decoded = json.loads(payload)
+                    if decoded.get("run_id") != run_id:
+                        continue
+                    events.append({"actor": actor, "action": action, "payload": decoded, "created_at": created_at})
+                    if len(events) >= safe_limit:
+                        break
+        return events
 
     def events_since(self, last_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         with self.transaction() as db:

@@ -23,6 +23,7 @@ def _torch() -> Any:
 class TorchBackend:
     name = "torch"
     version = "1.0"
+    execution_targets = ("cpu", "hybrid")
     task_types = tuple(item.value for item in TaskType)
     metrics = (
         "loss",
@@ -50,7 +51,13 @@ class TorchBackend:
             torch.cuda.manual_seed_all(config.seed)
         threads = max(1, int((os.cpu_count() or 1) * int(config.resource_limits.get("cpu_percent", 50)) / 100))
         torch.set_num_threads(threads)
-        use_cuda = bool(config.resource_limits.get("gpu_enabled")) and torch.cuda.is_available()
+        gpu_requested = bool(config.resource_limits.get("gpu_enabled"))
+        if gpu_requested and not torch.cuda.is_available():
+            raise ValueError(
+                "Hybrid execution requested a GPU, but PyTorch cannot access CUDA. "
+                "Buy or enable a compatible GPU, then retry; otherwise use execution='cpu'."
+            )
+        use_cuda = gpu_requested
         device = torch.device("cuda" if use_cuda else "cpu")
         if use_cuda:
             gpu_limit = int(config.resource_limits.get("gpu_memory_mb") or 0)
@@ -106,13 +113,7 @@ class TorchBackend:
 
         learning_rate = config.learning_rate
         if learning_rate is None:
-            learning_rate = {
-                "eco": .0008,
-                "low-memory": .0008,
-                "balanced": .001,
-                "performance": .0015,
-                "workstation": .0015,
-            }.get(config.profile, .001)
+            learning_rate = .001
         optimizer = torch.optim.AdamW(model.parameters(), lr=float(learning_rate), weight_decay=config.weight_decay)
         requested_precision = config.precision
         if requested_precision not in {"auto", "float32", "float16", "bfloat16"}:

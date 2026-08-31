@@ -208,22 +208,10 @@ def main() -> int:
         forbidden = [name for name in names if forbidden_archive_entry(artifact, name)]
         if forbidden:
             raise SystemExit(f"Forbidden files in {artifact.name}:\n" + "\n".join(forbidden))
-        internal_docs = [
-            name
-            for name in names
-            if "/docs/internal/" in ("/" + name.replace("\\", "/").lstrip("/"))
-        ]
-        if internal_docs:
-            raise SystemExit(
-                f"Internal reference leaked into {artifact.name}:\n" + "\n".join(internal_docs)
-            )
     sdist_names = archive_names(sdists[0])
     distributable_sources = (
-        "benchmarks/cpu/README.md",
-        "benchmarks/cpu/benchmark_dense_binary.py",
-        "benchmarks/cpu/results/modern-14-c12m-v0.6.0a1.json",
         "native/core/zig/memory_kernels.zig",
-        "native/core/fortran/training_kernels.f90",
+        "native/core/fortran/training/training_kernels.f90",
         "native/include/kernelyra_core.h",
         "src/kernelyra/formats.py",
         "src/kernelyra/architectures.py",
@@ -358,8 +346,15 @@ assert payload['new_files'] == []
         if not daemon_started:
             raise SystemExit("Installed-wheel daemon did not become healthy")
         formats = json.loads(cli("--json", "formats").stdout)
-        if formats.get("recognized_routes") != 535 or not {".csv", ".parquet"}.issubset(
-            formats.get("trainable_extensions", [])
+        format_counts = formats.get("format_counts")
+        format_rows = formats.get("formats")
+        if (
+            not isinstance(format_counts, dict)
+            or not isinstance(format_rows, list)
+            or formats.get("recognized_routes") != format_counts.get("recognized")
+            or len(format_rows) != format_counts.get("recognized")
+            or format_counts.get("directly_trainable") != 7
+            or not {".csv", ".parquet"}.issubset(formats.get("trainable_extensions", []))
         ):
             raise SystemExit(f"Installed-wheel terminal format registry failed: {formats}")
         public_health = _json_request(url, "/api/v1/health")

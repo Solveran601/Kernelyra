@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.7.0b1 — 2026-08-31
+
+- Published the first public beta for Windows x64 and Python 3.11–3.13. The
+  GitHub Release carries the verified wheel, source distribution, source ZIP,
+  checksums, and release manifest; PyPI publication remains disabled.
+- Updated the public README files to identify only the beta's verified tabular
+  scope and to provide a direct GitHub Release wheel installation path.
+- Made native multiclass bulk updates reuse their prepared minibatch buffers
+  and calculate cross-entropy only for the final reported step. Numerical
+  finite-value guards still execute on every update.
+- Removed virtual-environment assumptions from the public PowerShell journeys:
+  they now use the selected or ordinary installed Python interpreter.
+
+- Removed algorithm packs, custom pack files, `--pack`/`--profile` options,
+  related PowerShell commands, and SDK selectors. The engine now exposes one
+  automatic bounded policy; callers control CPU, RAM, GPU and thread ceilings
+  explicitly. Existing pack/profile TOML or environment settings now fail with
+  a migration message instead of being silently ignored.
+- Made persistent checkpoints opt-in: resume, final output, and Model Guard
+  rollback now default to `none`, so a caller chooses every durable model
+  write explicitly.
+- Added message-safe streaming preparation for supported text, JSONL/NDJSON,
+  and Telegram exports; it never writes prepared chunks unless an output path
+  is supplied.
+- Added transparent `Settings.validate()` / `Settings.explain()`, run-handle
+  snapshots, metrics, bounded logs, optional reports, a public side-effect-free
+  `ModelGuard`, and `kernelyra native self-test` for the installed native ABI.
+
 ## 0.6.0a2 — 2026-08-28
 
 - Added end-to-end configurable held-out split controls: validation/test
@@ -141,7 +169,7 @@
 - Added `AutoTrainer`, top-level `plan`/`train`/`finetune`, TOML/environment/explicit configuration precedence and exact manual-setting validation.
 - Added a lazy real PyTorch backend with safe weights-only fine-tuning, CUDA limits, mixed precision and gradient clipping.
 - Added bounded-memory CSV/TSV/JSONL/Parquet streaming with source fingerprints, parallel encoding, prefetch and checkpoint cursor restoration.
-- Added the stable `kernelyra-jsonl/1` stdio contract and adapters for C, C++, C#, Rust, Go, PHP, Java, Kotlin, Swift and Ruby.
+- Added the stable `kernelyra-jsonl/1` stdio contract and the original cross-language adapter foundation.
 - Added the shared easy-library API (`Config` plus `fit`/`tune`) for Python, Go, C++17, Rust and C#, including CMake, Cargo, Go module and NuGet package metadata.
 - Added a reproducible direct-framework benchmark for wall time, process-tree RAM, held-out score and checkpoint size without making unsupported speed claims.
 - Split small core, backend, data, gateway, MCP and full optional dependency sets.

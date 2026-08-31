@@ -144,6 +144,103 @@ def native_core_status() -> dict[str, Any]:
         }
 
 
+def native_core_self_test() -> dict[str, Any]:
+    """Run a small deterministic, in-process native ABI self-test.
+
+    It allocates a few float32 values in memory only. It does not build a
+    binary, inspect user data, create a workspace, or train a model. Optional
+    ABI additions are reported as skipped for older compatible cores.
+    """
+    status = native_core_status()
+    if not status["available"]:
+        return {
+            "ok": False,
+            "available": False,
+            "path": status["path"],
+            "checks": [],
+            "diagnostic": status["diagnostic"],
+        }
+
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, passed: bool, *, detail: str, optional: bool = False) -> None:
+        checks.append({"name": name, "ok": bool(passed), "optional": optional, "detail": detail})
+
+    try:
+        core = NativeCore(status["path"])
+        values = np.array([1.5, -2.0, 0.0, 4.0], dtype=np.float32)
+        add("finite_guard", core.all_finite(values), detail="finite float32 values were accepted")
+        expected_norm = math.sqrt(float(np.dot(values, values)))
+        measured_norm = core.l2_norm(values)
+        add(
+            "l2_norm",
+            math.isclose(measured_norm, expected_norm, rel_tol=2e-5, abs_tol=2e-5),
+            detail=f"value={measured_norm:.7g}",
+        )
+        clipped = core.clip(values, 1.0)
+        add(
+            "clip",
+            bool(np.array_equal(clipped, np.array([1.0, -1.0, 0.0, 1.0], dtype=np.float32))),
+            detail="clamp boundary preserved",
+        )
+        copied = np.zeros_like(values)
+        core.copy_f32(copied, values)
+        add("copy", bool(np.array_equal(copied, values)), detail="float32 copy matched source")
+        split = core.split_for_context(123456789, seed=42)
+        add("context_split", split in {0, 1, 2}, detail=f"split={split}")
+        chunk = core.next_chunk_size(4096, 1024, 768, 1280, 0, 42)
+        add("chunk_policy", 1 <= chunk <= 1280, detail=f"chunk={chunk}")
+
+        if core._extended_fortran_numeric_available:
+            softmax = core.softmax(np.array([0.0, 1.0, 2.0], dtype=np.float32))
+            add(
+                "fortran_softmax",
+                bool(
+                    np.isfinite(softmax).all()
+                    and math.isclose(float(softmax.sum()), 1.0, rel_tol=2e-5, abs_tol=2e-5)
+                ),
+                detail="finite probabilities sum to one",
+                optional=True,
+            )
+        else:
+            checks.append(
+                {"name": "fortran_softmax", "ok": None, "optional": True, "detail": "not present in this compatible core"}
+            )
+
+        if core._extended_zig_memory_available:
+            memory = np.zeros(4, dtype=np.float32)
+            core.fill_f32(memory, 2.0)
+            core.scale_f32(memory, .5)
+            core.add_f32(memory, np.ones(4, dtype=np.float32))
+            total, maximum = core.memory_summary(memory)
+            add(
+                "zig_memory",
+                bool(
+                    np.array_equal(memory, np.full(4, 2.0, dtype=np.float32))
+                    and total == 8.0
+                    and maximum == 2.0
+                ),
+                detail=f"sum={total:.7g}, max_abs={maximum:.7g}",
+                optional=True,
+            )
+        else:
+            checks.append(
+                {"name": "zig_memory", "ok": None, "optional": True, "detail": "not present in this compatible core"}
+            )
+    except (NativeCoreError, OSError, ValueError) as error:
+        checks.append({"name": "load_or_abi", "ok": False, "optional": False, "detail": f"{type(error).__name__}: {error}"})
+
+    passed = all(item["ok"] is not False for item in checks)
+    return {
+        "ok": passed,
+        "available": True,
+        "path": status["path"],
+        "version": status["version"],
+        "checks": checks,
+        "diagnostic": None if passed else "At least one native ABI check failed; rebuild or replace this binary.",
+    }
+
+
 def build_native_core(output_dir: str | Path | None = None) -> Path:
     """Build the Windows C ABI with Rust policy, Fortran math and Zig memory kernels."""
     root = Path(__file__).resolve().parents[2]
@@ -842,15 +939,18 @@ class NativeCore:
         text: str,
         *,
         minimum_bytes: int = 768,
-        target_bytes: int = 1_536,
+        target_bytes: int = 0,
         maximum_bytes: int = 2_048,
         overlap_bytes: int = 256,
     ) -> list[dict[str, Any]]:
         """Plan UTF-8-safe text spans with explicit reusable context prefixes.
 
         Each returned item has a ``content`` range that partitions the input
-        exactly once, plus a ``context`` prefix. A future language-model
-        trainer must mask this prefix from loss; v5 does not yet ship one.
+        exactly once, plus a ``context`` prefix.  ``target_bytes=0`` selects
+        the Rust-native automatic target inside the caller's minimum/maximum
+        bounds; a positive value selects a manual target.  A future
+        language-model trainer must mask this prefix from loss; this method
+        prepares text only and does not train a language model itself.
         """
         if not self._text_chunk_available:
             raise NativeCoreError("This native core does not include text chunk planning")
@@ -1421,7 +1521,12 @@ class NativeModel:
         return float(loss.value)
 
     def train_random_steps(self, x: np.ndarray, y: np.ndarray, batch_size: int, steps: int) -> float:
-        """Run deterministic random-batch updates inside one native ABI call."""
+        """Run deterministic random-batch updates in one native ABI call.
+
+        The native hot loop calculates and returns loss for the final update;
+        intermediate updates retain all numerical guards without paying for
+        redundant loss reductions.
+        """
         rows = np.ascontiguousarray(x, dtype=np.float32)
         targets = np.ascontiguousarray(y, dtype=np.float32).reshape(-1)
         if rows.ndim != 2 or rows.shape != (len(targets), self.features) or len(targets) == 0:

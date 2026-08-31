@@ -25,6 +25,7 @@ def _tensorflow() -> Any:
 class TensorFlowBackend:
     name = "tensorflow"
     version = "1.0"
+    execution_targets = ("cpu", "hybrid")
     task_types = tuple(item.value for item in TaskType)
     metrics = (
         "loss",
@@ -50,6 +51,11 @@ class TensorFlowBackend:
         gpu_limit = int(config.resource_limits.get("gpu_memory_mb") or 0)
         gpu_enabled = bool(config.resource_limits.get("gpu_enabled"))
         gpus = tf.config.list_physical_devices("GPU")
+        if gpu_enabled and not gpus:
+            raise ValueError(
+                "Hybrid execution requested a GPU, but TensorFlow cannot access one. "
+                "Buy or enable a compatible GPU, then retry; otherwise use execution='cpu'."
+            )
         if not gpu_enabled and gpus:
             tf.config.set_visible_devices([], "GPU")
             gpus = []
@@ -98,13 +104,7 @@ class TensorFlowBackend:
             )
             all_y = y
         test_size = len(test_y)
-        widths = list(config.hidden_layers) if config.hidden_layers else {
-            "eco": [16, 8],
-            "low-memory": [16, 8],
-            "balanced": [32, 16],
-            "performance": [64, 32, 16],
-            "workstation": [128, 64, 32],
-        }.get(config.profile, [32, 16])
+        widths = list(config.hidden_layers) if config.hidden_layers else [64, 32]
         class_count = int(max(all_y)) + 1 if config.task_type == TaskType.MULTICLASS_CLASSIFICATION.value else 1
 
         if config.model_path:
@@ -134,13 +134,7 @@ class TensorFlowBackend:
             loss_fn = tf.keras.losses.SparseCategoricalCrossentropy()
         else:
             loss_fn = tf.keras.losses.MeanSquaredError()
-        learning_rate = config.learning_rate or {
-            "eco": .0015,
-            "low-memory": .0015,
-            "balanced": .002,
-            "performance": .0025,
-            "workstation": .0025,
-        }.get(config.profile, .002)
+        learning_rate = config.learning_rate or .002
         optimizer = tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=config.weight_decay)
         if precision == "float16":
             optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)

@@ -16,7 +16,6 @@ from .checkpoints import CheckpointManager
 from .errors import ConfigurationError, RunError, RunStateError
 from .model_guard import assess_trend
 from .models import RunInfo
-from .packs import list_algorithm_packs
 from .quality import QualityGate
 from .storage import SQLiteStorage
 from .trace import TrainingTrace
@@ -104,7 +103,7 @@ class TrainingRuntime:
                     run.paused = True
                     run.termination_reason = "daemon_restart"
                     run.worker_pid = None
-                    run.message = "Runtime перезапущен во время работы; checkpoint можно продолжить"
+                    run.message = "Runtime перезапущен во время работы; возможность продолжения зависит от выбранной checkpoint policy"
                     self.storage.save_run(run)
             self._closing.clear()
             self._scheduler = threading.Thread(target=self._schedule_forever, name="kernelyra-scheduler", daemon=True)
@@ -262,7 +261,10 @@ class TrainingRuntime:
             run.paused = True
             run.termination_reason = "worker_crash" if failure else "recoverable_backend_error"
             detail = failure or RuntimeError("unknown worker error")
-            run.message = f"Ошибка {type(detail).__name__}: {str(detail)[:150]}. Лучший checkpoint сохранён; исправьте причину и продолжите."
+            run.message = (
+                f"Ошибка {type(detail).__name__}: {str(detail)[:150]}. "
+                "Исправьте причину и продолжите; доступность resume зависит от выбранной checkpoint policy."
+            )
             self.storage.log_action("runtime", "run.error", {"run_id": run.id, "error": str(detail)[:300]})
         elif outcome is LifecycleOutcome.STOP:
             run.status = "stopped"
@@ -291,7 +293,7 @@ class TrainingRuntime:
         self,
         run: RunInfo,
         worker: BackendWorker,
-        checkpoint: Path,
+        checkpoint: Path | None,
         metadata: dict[str, Any],
     ) -> None:
         """Preserve the incoming model before the first fine-tune update."""
@@ -304,33 +306,52 @@ class TrainingRuntime:
             "schema_version": 3,
             "kind": "fine_tune_baseline",
         }
-        worker.save_checkpoint(checkpoint, baseline_metadata)
-        self._record_worker_events(run, worker)
-        info = self.checkpoints.record(checkpoint, baseline_metadata)
         run.eval_count = 1
         run.best_score = evaluation.score
         run.best_step = 0
+        preserved = checkpoint is not None
+        if checkpoint is not None:
+            worker.save_checkpoint(checkpoint, baseline_metadata)
+            self._record_worker_events(run, worker)
+            info = self.checkpoints.record(checkpoint, baseline_metadata)
+            run.checkpoint = {
+                "best": {"filename": checkpoint.name, "sha256": info["sha256"], "step": 0},
+            }
         run.environment_manifest = {
             **run.environment_manifest,
-            "fine_tune_baseline": {"score": evaluation.score, "checkpoint": checkpoint.name},
+            "fine_tune_baseline": {
+                "score": evaluation.score,
+                "checkpoint": checkpoint.name if checkpoint is not None else None,
+                "preserved": preserved,
+            },
         }
         trace = TrainingTrace.from_metrics(run.metrics)
-        trace.add("fine_tune_baseline", score=evaluation.score, checkpoint=checkpoint.name)
+        trace.add(
+            "fine_tune_baseline",
+            score=evaluation.score,
+            checkpoint=checkpoint.name if checkpoint is not None else None,
+            preserved=preserved,
+        )
         run.metrics = {
             "step": 0,
             "validation": evaluation.metrics,
-            "baseline": {"score": evaluation.score, "preserved": True},
+            "baseline": {"score": evaluation.score, "preserved": preserved},
             "trace": trace.events,
             "created_at": time.time(),
         }
-        run.checkpoint = {
-            "best": {"filename": checkpoint.name, "sha256": info["sha256"], "step": 0},
-        }
-        run.message = f"Fine-tune baseline сохранён: score {evaluation.score:.3f}"
+        run.message = (
+            f"Fine-tune baseline сохранён: score {evaluation.score:.3f}"
+            if preserved
+            else f"Fine-tune baseline оценён только в памяти: score {evaluation.score:.3f}"
+        )
         self.storage.log_action(
             "runtime",
-            "finetune.baseline_preserved",
-            {"run_id": run.id, "score": evaluation.score, "checkpoint": checkpoint.name},
+            "finetune.baseline_preserved" if preserved else "finetune.baseline_ephemeral",
+            {
+                "run_id": run.id,
+                "score": evaluation.score,
+                "checkpoint": checkpoint.name if checkpoint is not None else None,
+            },
         )
         self._save_worker_progress(run)
 
@@ -344,13 +365,22 @@ class TrainingRuntime:
             x = y = None
         else:
             x, y = self.workspace.datasets.load_arrays(run.dataset)
-        checkpoint = self.checkpoint_path(run.id)
         checkpoint_policy = dict(run.checkpoint_policy or {})
-        source = self.checkpoints.resume_path(run.id, checkpoint_policy.get("resume", "last"))
+        checkpoint_enabled = any(value != "none" for value in checkpoint_policy.values())
+        checkpoint = self.checkpoint_path(run.id) if checkpoint_enabled else None
+        resume_kind = str(checkpoint_policy.get("resume", "none"))
+        source = self.checkpoints.resume_path(run.id, resume_kind) if resume_kind != "none" else None
         if source is None and run.base_run_id:
-            source = self.checkpoint_path(run.base_run_id)
+            candidate = self.checkpoint_path(run.base_run_id)
+            if not candidate.is_file():
+                raise RunError("The requested base run has no best checkpoint; enable checkpoint_final='best' before fine-tuning from it")
+            source = candidate
         backend_name = run.effective_backend or run.backend
         total_memory = int(float(self.workspace.hardware.get("ram_gb") or 8) * 1024**3)
+        # The worker limit is the caller's percentage of detected RAM. Do not
+        # silently inflate a low-memory budget to 256 MiB: the Job Object or
+        # POSIX limiter must enforce the value the plan reports.
+        memory_budget = max(1, int(total_memory * run.ram / 100))
         gpu_memory = max(
             (
                 int(float(item.get("vram_gb") or 0) * 1024)
@@ -359,16 +389,15 @@ class TrainingRuntime:
             default=0,
         )
         tuning = autotune_execution(
-            run.profile,
             self.workspace.hardware,
             records=dataset.records,
             features=dataset.features,
             batch_size=run.batch_size,
             streaming=bool(dataset_spec),
             execution_target=run.execution,
-            algorithm_pack=run.algorithm_pack,
             threads=run.threads,
             cpu_percent=run.cpu,
+            memory_budget_bytes=memory_budget,
         )
         config_payload = {
             "dataset_hash": dataset.sha256,
@@ -376,9 +405,7 @@ class TrainingRuntime:
             "task_type": run.objective,
             "architecture": run.architecture,
             "model_format": run.model_format,
-            "profile": run.profile,
             "execution": run.execution,
-            "algorithm_pack": run.algorithm_pack,
             "threads": run.threads,
             "seed": run.seed,
             "features": dataset.features,
@@ -413,13 +440,12 @@ class TrainingRuntime:
         config = BackendConfig(
             x=x,
             y=y,
-            profile=run.profile,
             seed=run.seed,
             task_type=run.objective,
             validation_fraction=float(run.split_policy.get("validation_percent", 15)) / 100.0,
             test_fraction=float(run.split_policy.get("test_percent", 15)) / 100.0,
             resource_limits={
-                "memory_bytes": max(256 * 1024**2, int(total_memory * run.ram / 100)),
+                "memory_bytes": memory_budget,
                 "cpu_percent": run.cpu,
                 "gpu_memory_mb": int(gpu_memory * run.gpu / 100),
                 "gpu_enabled": bool(run.execution == "hybrid" and run.gpu and self.workspace.hardware.get("gpu_available")),
@@ -465,7 +491,8 @@ class TrainingRuntime:
             "checkpoint_policy": checkpoint_policy,
         }
         if run.model_path:
-            self._capture_finetune_baseline(run, worker, checkpoint, checkpoint_metadata)
+            baseline_checkpoint = checkpoint if "best" in checkpoint_policy.values() else None
+            self._capture_finetune_baseline(run, worker, baseline_checkpoint, checkpoint_metadata)
         self._save_worker_progress(run)
         return self._execute_worker(run_id, run, worker, checkpoint)
 
@@ -474,7 +501,7 @@ class TrainingRuntime:
         run_id: str,
         run: RunInfo,
         worker: BackendWorker,
-        checkpoint: Path,
+        checkpoint: Path | None,
     ) -> LifecycleOutcome:
         """Return an explicit outcome only after the backend session is released."""
         try:
@@ -522,7 +549,7 @@ class TrainingRuntime:
         run_id: str,
         run: RunInfo,
         worker: BackendWorker,
-        checkpoint: Path,
+        checkpoint: Path | None,
     ) -> LifecycleOutcome:
         recent_scores: list[float] = []
         plateau = 0
@@ -621,7 +648,7 @@ class TrainingRuntime:
                 quality=quality_gate["status"],
             )
             if not quality_gate["finite"]:
-                run.message = "Quality Gate: обнаружены NaN/Inf; обучение остановлено до замены checkpoint"
+                run.message = "Quality Gate: обнаружены NaN/Inf; обучение остановлено до исправления метрик"
                 run.termination_reason = "quality_gate_invalid"
                 run.metrics = {
                     "step": run.step,
@@ -666,14 +693,16 @@ class TrainingRuntime:
                 "model_format": run.model_format,
                 "worker_protocol": run.worker_protocol,
             }
-            last_checkpoint = self.checkpoints.last_path(run.id)
-            worker.save_checkpoint(last_checkpoint, checkpoint_metadata)
-            self._record_worker_events(run, worker)
-            last_info = (
-                self.checkpoints.record(last_checkpoint, checkpoint_metadata)
-                if last_checkpoint.is_file()
-                else None
-            )
+            policy = dict(run.checkpoint_policy or {})
+            keep_best = "best" in policy.values()
+            keep_last = "last" in policy.values()
+            rollback_enabled = policy.get("rollback") == "best"
+            last_checkpoint = self.checkpoints.last_path(run.id) if checkpoint is not None else None
+            last_info: dict[str, Any] | None = None
+            if last_checkpoint is not None:
+                worker.save_checkpoint(last_checkpoint, checkpoint_metadata)
+                self._record_worker_events(run, worker)
+                last_info = self.checkpoints.record(last_checkpoint, checkpoint_metadata) if last_checkpoint.is_file() else None
             previous_best = run.best_score
             if run.eval_count > 1 and score < previous_best - run.degradation_margin:
                 degradation_streak += 1
@@ -683,28 +712,33 @@ class TrainingRuntime:
                 run.best_score = score
                 run.best_step = run.step
                 plateau = 0
-                if last_info is not None:
+                if last_info is not None and keep_best and checkpoint is not None and last_checkpoint is not None:
                     best_info = self.checkpoints.promote(
                         last_checkpoint,
                         checkpoint,
                         {**checkpoint_metadata, "best_score": run.best_score, "kind": "best"},
                     )
-                    run.checkpoint = {
-                        "best": {"filename": checkpoint.name, "sha256": best_info["sha256"], "step": run.step},
-                        "last": {
+                    run.checkpoint["best"] = {
+                        "filename": checkpoint.name, "sha256": best_info["sha256"], "step": run.step
+                    }
+                    if keep_last:
+                        run.checkpoint["last"] = {
                             "filename": last_checkpoint.name,
                             "sha256": last_info["sha256"],
                             "step": run.step,
-                        },
-                    }
+                        }
+                    else:
+                        self.checkpoints.discard_last(run.id)
             else:
                 plateau += 1
-                if last_info is not None:
+                if last_info is not None and keep_last and last_checkpoint is not None:
                     run.checkpoint["last"] = {
                         "filename": last_checkpoint.name,
                         "sha256": last_info["sha256"],
                         "step": run.step,
                     }
+                elif last_info is not None:
+                    self.checkpoints.discard_last(run.id)
             run.metrics["health"] = {
                 "status": "degrading" if degradation_streak else "stable",
                 "degradation_streak": degradation_streak,
@@ -728,36 +762,49 @@ class TrainingRuntime:
             note = self._adapt_batch(run, recent_scores, train_records)
             run.message = note or f"Validation #{run.eval_count}: score {score:.3f}; batch {run.batch_size}"
             if degradation_streak >= run.degradation_patience or guard_v2["restore_recommended"]:
-                run.message = "Model Guard: качество ухудшается; восстановлен лучший checkpoint"
                 run.termination_reason = "model_degradation"
-                rejected_checkpoint = dict(run.checkpoint.get("last") or {})
-                self.checkpoints.discard_last(run.id)
-                run.checkpoint.pop("last", None)
+                best_checkpoint = self.checkpoints.best_path(run.id)
+                restorer = getattr(worker, "restore_checkpoint", None)
+                if rollback_enabled and best_checkpoint.is_file() and callable(restorer):
+                    run.message = "Model Guard: качество ухудшается; восстановлен явно включённый best checkpoint"
+                    rejected_checkpoint = dict(run.checkpoint.get("last") or {})
+                    self.checkpoints.discard_last(run.id)
+                    run.checkpoint.pop("last", None)
+                    restorer(best_checkpoint)
+                    self._record_worker_events(run, worker)
+                    run.metrics["health"] = {
+                        **run.metrics["health"],
+                        "status": "best_checkpoint_restored",
+                        "delivered_score": run.best_score,
+                        "rejected_score": score,
+                        "rejected_checkpoint": {**rejected_checkpoint, "discarded": True},
+                    }
+                    self._save_worker_progress(run)
+                    return self._complete_with_test(run, worker, checkpoint, restore_kind="best")
+                run.message = (
+                    "Model Guard: качество ухудшается; обучение остановлено без отката, "
+                    "потому что checkpoint rollback=best не был включён пользователем"
+                )
                 run.metrics["health"] = {
                     **run.metrics["health"],
-                    "status": "best_checkpoint_restored",
-                    "delivered_score": run.best_score,
+                    "status": "stopped_without_persistent_rollback",
                     "rejected_score": score,
-                    "rejected_checkpoint": {
-                        **rejected_checkpoint,
-                        "discarded": True,
-                    },
                 }
                 self._save_worker_progress(run)
                 return self._complete_with_test(run, worker, checkpoint)
             if target_hits >= run.target_patience:
-                run.message = f"Цель {run.target_score:.3f} достигнута устойчиво; сохранён лучший checkpoint"
+                run.message = f"Цель {run.target_score:.3f} достигнута устойчиво"
                 run.termination_reason = "target_reached"
                 self._save_worker_progress(run)
                 return self._complete_with_test(run, worker, checkpoint)
             if plateau > run.early_stopping_patience:
-                run.message = "Smart Stop: улучшение закончилось; сохранён лучший checkpoint"
+                run.message = "Smart Stop: улучшение закончилось"
                 run.termination_reason = "early_stopping"
                 self._save_worker_progress(run)
                 return self._complete_with_test(run, worker, checkpoint)
             if run.step >= run.max_steps:
                 run.step = run.max_steps
-                run.message = "Аварийный лимит шагов достигнут; сохранён лучший checkpoint"
+                run.message = "Аварийный лимит шагов достигнут"
                 run.termination_reason = "max_steps"
                 self._save_worker_progress(run)
                 return self._complete_with_test(run, worker, checkpoint)
@@ -767,12 +814,15 @@ class TrainingRuntime:
         self,
         run: RunInfo,
         worker: BackendWorker,
-        checkpoint: Path,
+        checkpoint: Path | None,
+        *,
+        restore_kind: str | None = None,
     ) -> LifecycleOutcome:
         restorer = getattr(worker, "restore_checkpoint", None)
-        final_kind = str((run.checkpoint_policy or {}).get("final", "best"))
-        selected_checkpoint = self.checkpoint_path(run.id, kind=final_kind)
-        if selected_checkpoint.exists() and callable(restorer):
+        final_kind = str((run.checkpoint_policy or {}).get("final", "none"))
+        selected_kind = restore_kind or final_kind
+        selected_checkpoint = self.checkpoint_path(run.id, kind=selected_kind) if selected_kind != "none" else None
+        if selected_checkpoint is not None and selected_checkpoint.exists() and callable(restorer):
             restorer(selected_checkpoint)
             self._record_worker_events(run, worker)
         evaluator = getattr(worker, "evaluate_test", None)
@@ -788,7 +838,7 @@ class TrainingRuntime:
             **run.metrics,
             "test": test_result.metrics,
             "test_score": test_result.score,
-            "tested_checkpoint": run.checkpoint.get(final_kind, {}).get("sha256"),
+            "tested_checkpoint": run.checkpoint.get(selected_kind, {}).get("sha256"),
             "trace": trace.events,
         }
         self._save_worker_progress(run)
@@ -834,7 +884,6 @@ class TrainingRuntime:
             "datasets": [item.to_dict() for item in datasets],
             "hardware": self.workspace.hardware,
             "execution_targets": ["cpu", "hybrid"],
-            "algorithm_packs": list_algorithm_packs(),
             "model_formats": self.workspace.capabilities["model_formats"],
             "format_router_minimum": self.workspace.datasets.router.route_count,
             "capabilities": self.workspace.capabilities,

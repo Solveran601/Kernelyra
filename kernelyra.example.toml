@@ -6,7 +6,6 @@ backend = "auto"
 # Explicit execution target. `hybrid` requires a detected accelerator.
 execution = "cpu"
 # Recommendation only: it changes bounded data/memory defaults, not limits.
-algorithm_pack = "balanced"
 batch_size = 64
 max_steps = 5000
 target_metric = 0.93

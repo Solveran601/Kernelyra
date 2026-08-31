@@ -222,4 +222,14 @@ mod tests {
         assert_eq!(first, second);
         assert!(first.iter().all(|index| *index < 17));
     }
+
+    #[test]
+    fn sampler_repairs_the_degenerate_zero_state() {
+        let mut state = 0;
+        let mut values = [0_usize; 8];
+        sampler::fill_indices(97, &mut state, &mut values);
+        assert_ne!(state, 0);
+        assert!(values.iter().all(|index| *index < 97));
+        assert!(values.iter().any(|index| *index != 0));
+    }
 }

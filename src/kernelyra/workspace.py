@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,9 +15,6 @@ from .errors import ConfigurationError, RunError, RunNotFoundError
 from .hardware import (
     detect_hardware,
     execution_policy,
-    legacy_profile_for_pack,
-    recommend_profile,
-    resolve_algorithm_pack,
     resolve_execution_target,
 )
 from .models import RunConfig, RunInfo
@@ -26,8 +25,25 @@ if TYPE_CHECKING:
     from .runtime import TrainingRuntime
 
 
+def default_library_workspace() -> Path:
+    """Suggest a per-user state location for callers that choose to pass it.
+
+    Importing :mod:`kernelyra` and calling this helper are side-effect-free.
+    State is never created there automatically: pass its result explicitly to
+    ``Workspace.open``/``Engine`` only when this is the location you want.
+    """
+    configured = os.environ.get("KERNELYRA_LIBRARY_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    return (base / "Kernelyra" / "library").resolve()
+
+
 class Workspace:
-    """Explicit Kernelyra workspace. Call ``open`` to create state."""
+    """Kernelyra run state. Call ``open`` to create persistent state explicitly."""
 
     def __init__(self, root: Path, state_dir: Path, storage: SQLiteStorage, datasets: DatasetManager):
         self.root = root
@@ -44,7 +60,18 @@ class Workspace:
         return self.capability_registry.snapshot()
 
     @classmethod
-    def open(cls, path: str | Path) -> Workspace:
+    def open(cls, path: str | Path | None = None) -> Workspace:
+        """Open persistent state in a caller-selected location.
+
+        Kernelyra deliberately refuses an omitted path.  Importing the package
+        or constructing an API object must never make a hidden directory,
+        database, cache, checkpoint or copied dataset without that decision.
+        """
+        if path is None:
+            raise ConfigurationError(
+                "A persistent workspace is required. Pass workspace=... (or Workspace.open(path)) "
+                "so Kernelyra never creates state without your explicit location."
+            )
         root = Path(path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         state_dir = root / ".kernelyra"
@@ -85,7 +112,7 @@ class Workspace:
 
 
 class Kernelyra(Workspace):
-    def __init__(self, workspace: str | Path):
+    def __init__(self, workspace: str | Path | None = None):
         opened = Workspace.open(workspace)
         super().__init__(opened.root, opened.state_dir, opened.storage, opened.datasets)
 
@@ -112,19 +139,19 @@ class RunManager:
             config.architecture, config.model_format, config.backend, config.objective
         )
         try:
-            pack = resolve_algorithm_pack(config.algorithm_pack if config.profile == "auto" else config.profile)
             execution = resolve_execution_target(config.execution, self.workspace.hardware)
         except KeyError as error:
             raise ConfigurationError(str(error)) from None
-        profile = legacy_profile_for_pack(pack)
+        if execution not in backend.get("execution_targets", ["cpu"]):
+            raise ConfigurationError(
+                f"Backend '{config.backend}' is CPU-only. Hybrid execution requires a compatible PyTorch or TensorFlow GPU backend."
+            )
         policy = execution_policy(
-            profile,
             self.workspace.hardware,
             execution_target=execution,
-            algorithm_pack=pack,
         )
         ram = max(10, min(95, int(config.ram if config.ram is not None else 70)))
-        batch = plan_batch(records=dataset.records, features=dataset.features, profile=profile, ram_percent=ram, ram_gb=float(self.workspace.hardware.get("ram_gb") or 8), mode=config.batch_mode, requested=config.batch_size)
+        batch = plan_batch(records=dataset.records, features=dataset.features, ram_percent=ram, ram_gb=float(self.workspace.hardware.get("ram_gb") or 8), mode=config.batch_mode, requested=config.batch_size)
         if batch.requires_confirmation and not config.accept_batch_risk:
             raise ConfigurationError(f"Batch {batch.applied} выходит за безопасный диапазон {batch.safe_min}–{batch.safe_max}. Подтвердите риск или включите Auto")
         if config.priority not in {"high", "normal", "low"}:
@@ -132,7 +159,10 @@ class RunManager:
         cpu = max(10, min(100, int(config.cpu if config.cpu is not None else 70)))
         gpu = max(0, min(100, int(config.gpu if config.gpu is not None else (70 if execution == "hybrid" else 0))))
         if execution == "cpu" and gpu:
-            raise ConfigurationError("CPU execution cannot reserve GPU; choose hybrid execution")
+            raise ConfigurationError(
+                "GPU budget was requested for CPU-only execution. Choose execution='hybrid'; "
+                "if no accelerator is detected, buy or enable a compatible GPU."
+            )
         cpu_threads = max(1, int(self.workspace.hardware.get("cpu_threads") or 1))
         threads = config.threads
         if threads is None:
@@ -173,7 +203,7 @@ class RunManager:
         run = RunInfo.new(
             name=config.name[:80], dataset=config.dataset, backend=config.backend, effective_backend=None,
             objective=config.objective, architecture=architecture, model_format=model_format, mode=config.mode,
-            profile=profile, execution=execution, algorithm_pack=pack, priority=config.priority, target_score=target_score, batch_mode=config.batch_mode,
+            execution=execution, priority=config.priority, target_score=target_score, batch_mode=config.batch_mode,
             batch_size=batch.applied, batch_min=batch.safe_min, batch_max=batch.safe_max, batch_risk=batch.risk,
             batch_reason=batch.reason, batch_warnings=batch.warnings, max_steps=max(1, min(10_000_000, config.max_steps)),
             cpu=cpu, ram=ram, gpu=gpu, threads=threads,
@@ -220,6 +250,34 @@ class RunHandle:
             raise RunNotFoundError("Run не найден")
         return run
 
+    @property
+    def status(self) -> str:
+        """Current lifecycle state without exposing mutable storage objects."""
+        return self.info.status
+
+    @property
+    def metrics(self) -> dict[str, Any]:
+        """A detached snapshot of the latest metrics recorded for this run."""
+        return deepcopy(self.info.metrics)
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return one complete, JSON-safe run-state snapshot."""
+        return self.info.to_dict()
+
+    def logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Read bounded newest-first audit events for this run; never writes state."""
+        run = self.info  # Preserve the same clear not-found error as every RunHandle operation.
+        return self.workspace.storage.actions_for_run(run.id, limit)
+
+    def report(self, output: str | Path | None = None) -> dict[str, Any]:
+        """Build an experiment report and write it only when ``output`` is explicit."""
+        from .reports import build_experiment_report, write_experiment_report
+
+        report = build_experiment_report(self.workspace, self.id)
+        if output is not None:
+            report["output"] = str(write_experiment_report(report, output))
+        return report
+
     def start(self) -> RunInfo:
         return self.workspace.runtime.command(self.id, "start")
 
@@ -233,7 +291,6 @@ class RunHandle:
         return self.workspace.runtime.command(self.id, "stop")
 
 
-def batch_plan_for(workspace: Workspace, dataset_id: str, profile: str, mode: str, requested: int | None, ram: int) -> BatchPlan:
+def batch_plan_for(workspace: Workspace, dataset_id: str, mode: str, requested: int | None, ram: int) -> BatchPlan:
     dataset = workspace.datasets.get(dataset_id)
-    resolved = recommend_profile(workspace.hardware) if profile == "auto" else profile
-    return plan_batch(records=dataset.records, features=dataset.features, profile=resolved, ram_percent=ram, ram_gb=float(workspace.hardware.get("ram_gb") or 8), mode=mode, requested=requested)
+    return plan_batch(records=dataset.records, features=dataset.features, ram_percent=ram, ram_gb=float(workspace.hardware.get("ram_gb") or 8), mode=mode, requested=requested)

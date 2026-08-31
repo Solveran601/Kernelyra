@@ -93,7 +93,7 @@ class ContextChunkPlanner:
         else:
             # Stable identifiers should normally be str/int.  Tagging the
             # fallback with its type prevents accidental collisions with text.
-            payload = f"{type(context).__module__}.{type(context).__qualname__}:{context!r}".encode("utf-8")
+            payload = f"{type(context).__module__}.{type(context).__qualname__}:{context!r}".encode()
         return int.from_bytes(blake2b(payload, digest_size=8, person=b"Kernelyra").digest(), "little")
 
     def _native_core(self) -> NativeCore | None:

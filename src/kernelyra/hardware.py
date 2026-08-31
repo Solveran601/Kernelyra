@@ -7,8 +7,6 @@ import shutil
 import subprocess  # nosec B404
 from typing import Any
 
-from .packs import BUILTIN_ALGORITHM_PACKS, get_algorithm_pack, resolve_pack_name
-
 # Hardware detection invokes only an absolute nvidia-smi path returned by the OS.
 
 
@@ -97,171 +95,25 @@ def detect_hardware() -> dict[str, Any]:
     }
 
 
-def recommend_profile(hardware: dict[str, Any]) -> str:
-    """Compatibility value for stored pre-0.6 profiles.
-
-    New callers use an explicit execution target and algorithm pack.  Hardware
-    must not silently choose an aggressive policy merely because it looks
-    powerful, so the compatibility default is stable and conservative.
-    """
-    return "balanced"
-
-
-PROFILE_PRESETS: dict[str, dict[str, Any]] = {
-    "low-memory": {
-        "label": "Low memory",
-        "execution_mode": "weak",
-        "cpu": 30,
-        "ram": 35,
-        "gpu": 30,
-        "max_steps": 1000,
-        "batch_size": 32,
-        "model": "16 → 8",
-    },
-    "eco": {
-        "label": "Low memory (legacy eco alias)",
-        "execution_mode": "weak",
-        "cpu": 30,
-        "ram": 35,
-        "gpu": 30,
-        "max_steps": 1000,
-        "batch_size": 32,
-        "model": "16 → 8",
-    },
-    "balanced": {
-        "label": "Balanced",
-        "execution_mode": "balanced",
-        "cpu": 55,
-        "ram": 55,
-        "gpu": 55,
-        "max_steps": 2400,
-        "batch_size": 64,
-        "model": "32 → 16",
-    },
-    "performance": {
-        "label": "Performance",
-        "execution_mode": "performance",
-        "cpu": 80,
-        "ram": 75,
-        "gpu": 75,
-        "max_steps": 5000,
-        "batch_size": 128,
-        "model": "64 → 32 → 16",
-    },
-    "workstation": {
-        "label": "Workstation",
-        "execution_mode": "workstation",
-        # Workstations are throughput-oriented: CPU/GPU are uncapped while RAM
-        # retains a small emergency reserve for the OS, filesystem cache and
-        # checkpoint writer.
-        "cpu": 100,
-        "ram": 95,
-        "gpu": 100,
-        "reserve_ram_gb": 3,
-        "max_steps": 9000,
-        "batch_size": 256,
-        "model": "256 → 128 → 64",
-    },
-    "custom": {
-        "label": "Custom",
-        "execution_mode": "balanced",
-        "cpu": 55,
-        "ram": 55,
-        "gpu": 0,
-        "max_steps": 2400,
-        "batch_size": 64,
-        "model": "backend-defined",
-    },
+AUTOMATIC_EXECUTION_POLICY: dict[str, Any] = {
+    "data_workers": 2,
+    "prefetch": 2,
+    "stream_limit": 256 * 1024 * 1024,
+    # CPU is already a caller-controlled ceiling.  A run explicitly granted
+    # 100% CPU must be allowed to use all detected worker threads instead of
+    # being silently capped to an arbitrary fraction.
+    "native_thread_fraction": 1.0,
+    "bulk_step_cap": 32,
+    "arena_bytes": 96 * 1024 * 1024,
+    "chunk_target_records": 4096,
+    "hidden_layers": (64, 32),
+    "strategy": "automatic bounded execution",
+    "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
+    # Native and NumPy are intentionally CPU-only.  Do not silently accept a
+    # hybrid request and run it on the CPU: callers requesting a GPU deserve a
+    # clear incompatibility error rather than a misleading successful run.
+    "hybrid_backends": ("torch", "tensorflow"),
 }
-
-# Legacy execution programs remain only to read existing run records. New
-# public APIs use ALGORITHM_PACKS below and do not expose PC-strength labels.
-EXECUTION_MODES: dict[str, dict[str, Any]] = {
-    "weak": {
-        "label": "Weak PC",
-        "data_workers": 0,
-        "prefetch": 0,
-        "stream_limit": 128 * 1024 * 1024,
-        "native_thread_fraction": .25,
-        "bulk_step_cap": 8,
-        "arena_bytes": 32 * 1024 * 1024,
-        "strategy": "stream-first, low-copy, low-latency",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "gpu_backends": ("native", "numpy", "torch", "tensorflow"),
-    },
-    "balanced": {
-        "label": "Balanced PC",
-        "data_workers": 2,
-        "prefetch": 2,
-        "stream_limit": 256 * 1024 * 1024,
-        "native_thread_fraction": .5,
-        "bulk_step_cap": 32,
-        "arena_bytes": 96 * 1024 * 1024,
-        "strategy": "balanced parallelism with bounded reuse",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "gpu_backends": ("native", "torch", "tensorflow", "numpy"),
-    },
-    "performance": {
-        "label": "Powerful PC",
-        "data_workers": 6,
-        "prefetch": 4,
-        "stream_limit": 384 * 1024 * 1024,
-        "native_thread_fraction": .75,
-        "bulk_step_cap": 100,
-        "arena_bytes": 256 * 1024 * 1024,
-        "strategy": "throughput-first OpenMP and bulk dispatch",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "gpu_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-    "workstation": {
-        "label": "Workstation",
-        "data_workers": 12,
-        "prefetch": 8,
-        "stream_limit": 2**63 - 1,
-        "native_thread_fraction": 1.0,
-        "bulk_step_cap": 100,
-        "arena_bytes": 768 * 1024 * 1024,
-        "strategy": "maximum local throughput with large reusable arena",
-        "cpu_backends": ("native", "numpy", "torch", "tensorflow"),
-        "gpu_backends": ("torch", "tensorflow", "native", "numpy"),
-    },
-}
-
-
-# Compatibility export for callers that only need immutable release defaults.
-ALGORITHM_PACKS = BUILTIN_ALGORITHM_PACKS
-
-_LEGACY_PROFILE_PACK = {
-    "auto": "balanced",
-    "eco": "careful",
-    "low-memory": "careful",
-    "balanced": "balanced",
-    "performance": "throughput",
-    "workstation": "maximum",
-    "custom": "balanced",
-}
-_PACK_PROFILE = {
-    "careful": "low-memory",
-    "balanced": "balanced",
-    "throughput": "performance",
-    "maximum": "workstation",
-}
-
-
-def resolve_algorithm_pack(value: str | None) -> str:
-    """Validate a public pack name or map a stored legacy profile."""
-    selected = str(value or "balanced").strip().lower()
-    if selected in _LEGACY_PROFILE_PACK:
-        return _LEGACY_PROFILE_PACK[selected]
-    return resolve_pack_name(selected)
-
-
-def legacy_profile_for_pack(pack: str) -> str:
-    """Return the hidden compatibility profile required by existing backends."""
-    selected = resolve_algorithm_pack(pack)
-    if selected in _PACK_PROFILE:
-        return _PACK_PROFILE[selected]
-    return str(get_algorithm_pack(selected)["profile"])
 
 
 def resolve_execution_target(value: str | None, hardware: dict[str, Any]) -> str:
@@ -272,32 +124,22 @@ def resolve_execution_target(value: str | None, hardware: dict[str, Any]) -> str
     if target not in {"cpu", "hybrid"}:
         raise KeyError("execution must be cpu, hybrid, or auto")
     if target == "hybrid" and not bool(hardware.get("gpu_available")):
-        raise KeyError("hybrid execution requires a detected accelerator; use cpu or configure KERNELYRA_ACCELERATOR")
+        raise KeyError(
+            "Hybrid execution requires a detected accelerator. Buy or enable a compatible GPU, "
+            "then retry; otherwise use execution='cpu'."
+        )
     return target
 
 
-def execution_mode(profile: str) -> str:
-    """Compatibility alias for code that still asks for a legacy mode."""
-    return resolve_algorithm_pack(profile)
-
-
 def execution_policy(
-    profile: str | None,
     hardware: dict[str, Any],
     *,
     execution_target: str | None = "auto",
-    algorithm_pack: str | None = None,
 ) -> dict[str, Any]:
-    """Return an explicit CPU or hybrid policy plus a named algorithm pack.
-
-    ``profile`` remains accepted only for persisted runs and older SDK calls.
-    It never appears in the modern CLI help or PowerShell surface.
-    """
-    pack = resolve_algorithm_pack(algorithm_pack or profile)
+    """Resolve one predictable policy; resource limits remain caller-owned."""
     target = resolve_execution_target(execution_target, hardware)
-    policy = get_algorithm_pack(pack)
-    policy["mode"] = pack
-    policy["algorithm_pack"] = pack
+    policy = dict(AUTOMATIC_EXECUTION_POLICY)
+    policy["mode"] = "automatic"
     policy["execution"] = target
     policy["backend_order"] = policy["hybrid_backends"] if target == "hybrid" else policy["cpu_backends"]
     return policy

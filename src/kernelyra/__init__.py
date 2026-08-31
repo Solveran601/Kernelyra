@@ -3,6 +3,17 @@
 from .async_client import AsyncKernelyraClient
 from .auto import AutoTrainer, TrainingPlan, TrainingResult, finetune, plan, train
 from .client import DaemonClient, RemoteError
+from .conversation_chunks import (
+    ConversationChunk,
+    ConversationChunker,
+    ConversationMessage,
+    iter_conversation_chunks,
+    iter_conversation_messages,
+    iter_jsonl_messages,
+    iter_plain_text_messages,
+    iter_telegram_messages,
+    write_conversation_chunks,
+)
 from .data_health import analyze_inspection, inspect_path, recommend_chunk_policy
 from .easy import Config, Engine, Settings, TrainingConfig, fit
 from .errors import (
@@ -24,6 +35,7 @@ from .errors import (
 from .extraction import TextChunk, extract_folder, extract_text, text_format_count
 from .format_intelligence import advise_path
 from .inference import run_inference_check
+from .model_guard import ModelGuard, assess_trend
 from .models import (
     BackendInfo,
     DatasetInfo,
@@ -36,18 +48,7 @@ from .models import (
     RunStatus,
     TaskType,
 )
-from .native_core import NativeTensorArena
-from .packs import (
-    PACK_ALGORITHMS,
-    add_pack_algorithm,
-    algorithm_pack_path,
-    algorithm_pack_table,
-    create_algorithm_pack,
-    delete_algorithm_pack,
-    get_algorithm_pack,
-    list_algorithm_packs,
-    remove_pack_algorithm,
-)
+from .native_core import NativeTensorArena, native_core_self_test, native_core_status
 from .planning import ContextChunk, ContextChunkPlanner
 from .quality import QualityGate
 from .reports import build_experiment_report, write_experiment_report
@@ -61,9 +62,9 @@ from .text_training import (
     prepare_masked_text_examples,
 )
 from .tuning import autotune_execution
-from .workspace import Kernelyra, RunHandle, Workspace
+from .workspace import Kernelyra, RunHandle, Workspace, default_library_workspace
 
-__version__ = "0.6.0a2"
+__version__ = "0.7.0b1"
 
 Dataset = DatasetInfo
 Run = RunInfo
@@ -75,10 +76,14 @@ __all__ = [
     "AsyncKernelyraClient",
     "AutoTrainer",
     "analyze_inspection",
+    "assess_trend",
     "BackendInfo",
     "ByteTokenizer",
     "ConfigurationError",
     "Config",
+    "ConversationChunk",
+    "ConversationChunker",
+    "ConversationMessage",
     "ContextChunk",
     "ContextChunkPlanner",
     "DaemonClient",
@@ -91,6 +96,7 @@ __all__ = [
     "DatasetSchema",
     "IngestorInfo",
     "Engine",
+    "ModelGuard",
     "RemoteError",
     "QualityGate",
     "Run",
@@ -109,7 +115,8 @@ __all__ = [
     "KernelyraClient",
     "KernelyraError",
     "NativeTensorArena",
-    "PACK_ALGORITHMS",
+    "native_core_self_test",
+    "native_core_status",
     "MaskedTextBatch",
     "MaskedTextExample",
     "TrainingPlan",
@@ -120,6 +127,7 @@ __all__ = [
     "WorkerProtocolError",
     "WorkerTimeoutError",
     "Workspace",
+    "default_library_workspace",
     "finetune",
     "extract_folder",
     "extract_text",
@@ -133,17 +141,15 @@ __all__ = [
     "train",
     "write_experiment_report",
     "autotune_execution",
-    "add_pack_algorithm",
-    "algorithm_pack_path",
-    "algorithm_pack_table",
     "advise_path",
     "batch_masked_text_examples",
     "iter_masked_text_batches",
+    "iter_conversation_chunks",
+    "iter_conversation_messages",
+    "iter_jsonl_messages",
+    "iter_plain_text_messages",
+    "iter_telegram_messages",
     "plan_text_for_training",
     "prepare_masked_text_examples",
-    "create_algorithm_pack",
-    "delete_algorithm_pack",
-    "get_algorithm_pack",
-    "list_algorithm_packs",
-    "remove_pack_algorithm",
+    "write_conversation_chunks",
 ]

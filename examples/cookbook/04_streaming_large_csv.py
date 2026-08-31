@@ -1,11 +1,10 @@
-"""Train a large CSV with explicit CPU limits and a careful data pack."""
+"""Train a large CSV with explicit CPU limits and bounded streaming."""
 from kernelyra import Config, Engine
 
 settings = (
     Config()
     .target("label")
     .cpu_only()
-    .pack("careful")
     .resources(cpu=50, ram=45, threads=2)
     .data(workers=2, prefetch=1)
     .steps(20_000)

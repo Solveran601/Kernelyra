@@ -14,7 +14,7 @@ def _non_finite_paths(value: Any, path: str = "metrics") -> list[str]:
         for key, item in value.items():
             result.extend(_non_finite_paths(item, f"{path}.{key}"))
         return result
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         result = []
         for index, item in enumerate(value):
             result.extend(_non_finite_paths(item, f"{path}[{index}]"))

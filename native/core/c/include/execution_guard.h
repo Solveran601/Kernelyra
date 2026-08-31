@@ -20,8 +20,18 @@ typedef struct kr_c_batch_contract {
   size_t working_bytes;
 } kr_c_batch_contract;
 
+/* Exact, overflow-checked storage required by one dense model weight table. */
+typedef struct kr_c_model_contract {
+  size_t weight_elements;
+  size_t weight_bytes;
+} kr_c_model_contract;
+
 /* Return 1 only when rows * columns is representable as size_t. */
 KR_API int kr_c_core_matrix_elements(size_t rows, size_t columns, size_t* output_elements);
+
+/* Return 1 only when a features-by-classes float32 weight table is representable. */
+KR_API int kr_c_core_model_contract_make(
+    size_t features, size_t classes, kr_c_model_contract* output);
 
 /*
  * Validate a random-training request and publish exact float32 storage

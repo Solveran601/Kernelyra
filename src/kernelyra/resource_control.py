@@ -85,7 +85,10 @@ class WindowsJob:
         self.handle: int | None = None
         self.status: dict[str, Any] = {
             "requested": requested_limits(resource_limits),
-            "scheduler_enforced": True,
+            # This becomes true only after the child process is actually
+            # assigned to the Job Object.  A successfully configured but
+            # unassigned Job Object enforces nothing for the worker.
+            "scheduler_enforced": False,
             "os_enforced": {},
             "backend_enforced": {
                 "gpu_memory": "pending_backend_confirmation" if resource_limits.get("gpu_memory_mb") else "not_requested"
@@ -100,7 +103,13 @@ class WindowsJob:
         try:
             self._assign(pid, resource_limits)
         except (OSError, ValueError) as error:
+            # CPU/memory flags can be set before AssignProcessToJobObject.
+            # Do not report those flags as enforcement when assignment fails.
+            self.status["os_enforced"].clear()
+            self.status["scheduler_enforced"] = False
+            self.status["unsupported"].append("windows_job_object_assignment")
             self.status["degraded"].append(f"job_object: {type(error).__name__}: {str(error)[:120]}")
+            self.close()
 
     def _assign(self, pid: int, resource_limits: dict[str, Any]) -> None:
         from ctypes import wintypes
@@ -191,6 +200,7 @@ class WindowsJob:
         self.status["os_enforced"]["process_tree"] = "job_object"
         if memory_bytes:
             self.status["os_enforced"]["memory"] = "job_object_process_memory"
+        self.status["scheduler_enforced"] = True
 
     def terminate(self, exit_code: int = 1) -> None:
         if self.handle and os.name == "nt":

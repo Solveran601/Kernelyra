@@ -12,7 +12,6 @@ int main(int argc, char** argv) {
   auto config = kernelyra::Config::automatic()
       .backend(backend)
       .cpu_only()
-      .algorithm_pack(kernelyra::AlgorithmPack::throughput)
       .resources(90, 80, 0, 8)
       .goal(0.95)
       .steps(steps);

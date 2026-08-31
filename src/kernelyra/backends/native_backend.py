@@ -65,6 +65,7 @@ class NativeBackend(NumpyBackend):
     name = "native"
     version = "1.0"
     export_formats = ("npz", "run-manifest-json", "kernelyra-native-c-abi")
+    execution_targets = ("cpu",)
 
     def create_session(self, config: BackendConfig) -> TrainingSession:
         if config.precision not in {"auto", "float32"}:
@@ -87,23 +88,21 @@ class NativeBackend(NumpyBackend):
                 native_source = None
             if native_source is not None:
                 rng = np.random.default_rng(config.seed)
-                all_y = np.concatenate((native_source.validation_y, native_source.test_y))
+                validation_y = native_source.validation_y
+                test_y = native_source.test_y
+                evaluation_count = len(validation_y) + len(test_y)
+                if evaluation_count == 0:
+                    native_source.close()
+                    raise NativeCoreError("Native streaming requires held-out targets")
                 state: dict[str, Any] = {
                     "task_type": config.task_type,
-                    "learning_rate": config.learning_rate
-                    or {
-                        "eco": .025,
-                        "low-memory": .025,
-                        "balanced": .035,
-                        "performance": .04,
-                        "workstation": .04,
-                    }.get(config.profile, .035),
+                    "learning_rate": config.learning_rate or .035,
                     "weight_decay": float(config.weight_decay),
                     "dtype": np.float32,
                 }
                 features = native_source.validation_x.shape[1]
                 if config.task_type == TaskType.MULTICLASS_CLASSIFICATION.value:
-                    class_count = int(max(all_y)) + 1
+                    class_count = int(max(float(validation_y.max()), float(test_y.max()))) + 1
                     state.update(
                         {
                             "weights": rng.normal(0, .1, (features, class_count)),
@@ -114,8 +113,14 @@ class NativeBackend(NumpyBackend):
                 else:
                     state.update({"weights": rng.normal(0, .1, features), "bias": 0.0})
                 if config.task_type == TaskType.REGRESSION.value:
+                    target_sum = float(validation_y.sum(dtype=np.float64) + test_y.sum(dtype=np.float64))
+                    target_square_sum = float(
+                        np.square(validation_y, dtype=np.float64).sum() + np.square(test_y, dtype=np.float64).sum()
+                    )
+                    target_mean = target_sum / evaluation_count
+                    target_variance = max(0.0, target_square_sum / evaluation_count - target_mean * target_mean)
                     state.update(
-                        {"target_mean": float(all_y.mean()), "target_std": float(all_y.std()) or 1.0}
+                        {"target_mean": target_mean, "target_std": float(np.sqrt(target_variance)) or 1.0}
                     )
                 session = TrainingSession(
                     state,

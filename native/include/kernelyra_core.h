@@ -151,7 +151,9 @@ KR_API size_t kr_rust_next_adaptive_chunk_size(
     uint64_t seed,
     uint32_t memory_pressure_percent,
     uint32_t aggression_percent);
-/* Plan UTF-8-safe context spans. Call with output=NULL to obtain span count. */
+/* Plan UTF-8-safe context spans. target_bytes=0 selects the Rust automatic
+ * target within minimum_bytes..maximum_bytes. Call with output=NULL first to
+ * obtain the required span count. */
 KR_API size_t kr_text_plan_chunks(
     const uint8_t* text,
     size_t length,
