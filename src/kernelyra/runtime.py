@@ -451,6 +451,8 @@ class TrainingRuntime:
                 "gpu_enabled": bool(run.execution == "hybrid" and run.gpu and self.workspace.hardware.get("gpu_available")),
                 "native_threads": tuning["native_threads"],
                 "arena_bytes": tuning["arena_bytes"],
+                "arena_fits_batch": tuning["arena_fits_batch"],
+                "evaluation_buffer_bytes": tuning["evaluation_buffer_bytes"],
                 "bulk_step_cap": tuning["bulk_step_cap"],
             },
             model_path=Path(run.model_path) if run.model_path else None,

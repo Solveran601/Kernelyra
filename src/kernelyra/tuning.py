@@ -44,6 +44,10 @@ def autotune_execution(
     memory_cap = max(64 * 1024, requested_memory // 16)
     arena_cap = min(policy_cap, memory_cap)
     arena_bytes = min(arena_cap, max(64 * 1024, required_arena))
+    # Keep validation/test arrays outside the monotonic batch arena bounded as
+    # well.  This limit covers both held-out splits and remains a small,
+    # explicit fraction of the caller's hard worker-memory budget.
+    evaluation_buffer_bytes = min(16 * 1024 * 1024, max(64 * 1024, requested_memory // 32))
     return {
         "mode": "automatic",
         "execution": execution,
@@ -53,6 +57,7 @@ def autotune_execution(
         "arena_cap_bytes": arena_cap,
         "arena_required_bytes": required_arena,
         "arena_fits_batch": required_arena <= arena_cap,
+        "evaluation_buffer_bytes": evaluation_buffer_bytes,
         "memory_budget_bytes": requested_memory,
         "data_workers": int(policy["data_workers"]),
         "prefetch": int(policy["prefetch"]),

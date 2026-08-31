@@ -513,6 +513,17 @@ class StreamingTabularSource:
             if self._context_column
             else None
         )
+        self._target_column = str(self.spec["target"])
+        self._task_type = str(self.spec["task_type"])
+        self._numeric_columns = tuple(str(column) for column in self.spec["numeric_columns"])
+        self._categorical_columns = tuple(str(column) for column in self.spec["categorical_columns"])
+        self._means = self.spec["means"]
+        self._stds = self.spec["stds"]
+        self._hash_buckets = int(self.spec["hash_buckets"])
+        self._feature_count = len(self._numeric_columns) + len(self._categorical_columns) * self._hash_buckets
+        self._class_indices = {
+            str(label): index for index, label in enumerate(self.spec.get("classes", ()))
+        }
         self._iterator = self._training_rows()
         self._executor = (
             ThreadPoolExecutor(max_workers=self.data_workers, thread_name_prefix="kernelyra-data")
@@ -541,31 +552,32 @@ class StreamingTabularSource:
         )
 
     def _encode(self, row: Mapping[str, str]) -> tuple[np.ndarray, float]:
-        result: list[float] = []
-        means = self.spec["means"]
-        stds = self.spec["stds"]
-        for column in self.spec["numeric_columns"]:
+        result = (
+            np.zeros(self._feature_count, dtype=np.float32)
+            if self._categorical_columns
+            else np.empty(self._feature_count, dtype=np.float32)
+        )
+        for index, column in enumerate(self._numeric_columns):
             value = _number(row.get(column))
-            result.append(0.0 if value is None else (value - float(means[column])) / float(stds[column]))
-        buckets = int(self.spec["hash_buckets"])
-        for column in self.spec["categorical_columns"]:
-            encoded = [0.0] * buckets
+            result[index] = 0.0 if value is None else (value - float(self._means[column])) / float(self._stds[column])
+        offset = len(self._numeric_columns)
+        for column in self._categorical_columns:
             raw = str(row.get(column, ""))
-            bucket = int.from_bytes(hashlib.blake2b(raw.encode("utf-8"), digest_size=8).digest(), "little") % buckets
-            encoded[bucket] = 1.0
-            result.extend(encoded)
-        target = str(row[self.spec["target"]]).strip()
-        if self.spec["task_type"] == TaskType.REGRESSION.value:
+            bucket = int.from_bytes(hashlib.blake2b(raw.encode("utf-8"), digest_size=8).digest(), "little") % self._hash_buckets
+            result[offset + bucket] = 1.0
+            offset += self._hash_buckets
+        target = str(row[self._target_column]).strip()
+        if self._task_type == TaskType.REGRESSION.value:
             number = _number(target)
             if number is None:
                 raise DatasetError("Regression target contains a non-numeric value")
             y = number
         else:
-            try:
-                y = float(self.spec["classes"].index(target))
-            except ValueError:
+            class_index = self._class_indices.get(target)
+            if class_index is None:
                 raise DatasetError("Target class changed after streaming inspection") from None
-        return np.asarray(result, dtype=np.float32), y
+            y = float(class_index)
+        return result, y
 
     def _training_rows(self) -> Generator[dict[str, str], None, None]:
         while True:

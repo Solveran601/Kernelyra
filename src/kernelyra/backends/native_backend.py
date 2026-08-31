@@ -14,7 +14,13 @@ from .numpy_backend import NumpyBackend
 
 
 class _NativeStreamingBundle:
-    def __init__(self, spec: dict[str, Any], *, arena_bytes: int | None = None):
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        *,
+        arena_bytes: int | None = None,
+        evaluation_buffer_bytes: int | None = None,
+    ):
         self.arena = NativeTensorArena(byte_budget=arena_bytes)
         self.train = NativeNumericCsvStream(
             spec, split="train", core=self.arena.core, arena=self.arena, reuse_buffers=True
@@ -26,10 +32,15 @@ class _NativeStreamingBundle:
             test = NativeNumericCsvStream(
                 spec, split="test", core=self.arena.core
             )
-            self.validation_x, self.validation_y = validation.next_batch(
-                min(4096, validation.selected_records)
-            )
-            self.test_x, self.test_y = test.next_batch(min(4096, test.selected_records))
+            bytes_per_row = (validation.features + 1) * np.dtype(np.float32).itemsize
+            rows = min(4096, validation.selected_records, test.selected_records)
+            if evaluation_buffer_bytes is not None:
+                rows = min(rows, int(evaluation_buffer_bytes) // max(1, 2 * bytes_per_row))
+            if rows < 8:
+                raise NativeCoreError("Native evaluation buffer cannot retain eight rows per held-out split")
+            self.evaluation_rows = rows
+            self.validation_x, self.validation_y = validation.next_batch(rows)
+            self.test_x, self.test_y = test.next_batch(rows)
         except Exception:
             self.train.close()
             raise
@@ -71,21 +82,31 @@ class NativeBackend(NumpyBackend):
         if config.precision not in {"auto", "float32"}:
             raise ValueError("Native backend supports precision=auto or float32")
         session: TrainingSession | None = None
+        stream_fallback_reason: str | None = None
         if config.dataset_spec:
             try:
                 arena_bytes = int(config.resource_limits.get("arena_bytes") or 0) or None
+                evaluation_buffer_bytes = int(config.resource_limits.get("evaluation_buffer_bytes") or 0) or None
                 # NativeNumericCsvStream assigns split membership from record
                 # positions.  Group-exclusive data must stay on the shared
                 # stream contract, which assigns one context to one split.
-                native_source = (
-                    None
-                    if config.dataset_spec.get("context_column")
-                    else _NativeStreamingBundle(config.dataset_spec, arena_bytes=arena_bytes)
-                )
-            except NativeCoreError:
+                if config.dataset_spec.get("context_column"):
+                    native_source = None
+                    stream_fallback_reason = "context-preserving split requires the general streaming source"
+                elif config.resource_limits.get("arena_fits_batch") is False:
+                    native_source = None
+                    stream_fallback_reason = "planned batch exceeds the native reusable-arena budget"
+                else:
+                    native_source = _NativeStreamingBundle(
+                        config.dataset_spec,
+                        arena_bytes=arena_bytes,
+                        evaluation_buffer_bytes=evaluation_buffer_bytes,
+                    )
+            except NativeCoreError as error:
                 # Missing values, categorical features and non-numeric targets
                 # remain supported by the general bounded-memory source.
                 native_source = None
+                stream_fallback_reason = str(error)
             if native_source is not None:
                 rng = np.random.default_rng(config.seed)
                 validation_y = native_source.validation_y
@@ -139,11 +160,14 @@ class NativeBackend(NumpyBackend):
                         "streaming": True,
                         "precision": "float32",
                         "stream_engine": "kernelyra-native-csv-stream/1",
+                        "stream_evaluation_rows": native_source.evaluation_rows,
                     },
                     data_source=native_source,
                 )
         if session is None:
             session = super().create_session(config)
+            if stream_fallback_reason is not None:
+                session.metadata["native_stream_fallback"] = stream_fallback_reason
         task = str(session.state["task_type"])
         weights = np.asarray(session.state["weights"], dtype=np.float32)
         bias = np.asarray(np.atleast_1d(session.state["bias"]), dtype=np.float32)

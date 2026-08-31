@@ -82,16 +82,21 @@ function Get-KernelyraPlan {
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
-        [ValidateRange(1,256)] [int]$Threads = 1,
+        [ValidateRange(1,256)] [Nullable[int]]$Threads,
+        [ValidateRange(0,64)] [Nullable[int]]$DataWorkers,
+        [ValidateRange(0,32)] [Nullable[int]]$Prefetch,
         [string]$Workspace
     )
 
-    $arguments = @("plan", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads)
+    $arguments = @("plan", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu)
     if ($Target) { $arguments += @("--target", $Target) }
     if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
     if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
     if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
     if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
+    if ($PSBoundParameters.ContainsKey("Threads")) { $arguments += @("--threads", $Threads) }
+    if ($PSBoundParameters.ContainsKey("DataWorkers")) { $arguments += @("--data-workers", $DataWorkers) }
+    if ($PSBoundParameters.ContainsKey("Prefetch")) { $arguments += @("--prefetch", $Prefetch) }
     Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
 }
 
@@ -116,18 +121,23 @@ function Start-KernelyraTraining {
         [ValidateRange(10,100)] [int]$Cpu = 70,
         [ValidateRange(10,95)] [int]$Ram = 70,
         [ValidateRange(0,100)] [int]$Gpu = 0,
-        [ValidateRange(1,256)] [int]$Threads = 1,
-        [int]$MaxSteps = 1400,
+        [ValidateRange(1,256)] [Nullable[int]]$Threads,
+        [ValidateRange(0,64)] [Nullable[int]]$DataWorkers,
+        [ValidateRange(0,32)] [Nullable[int]]$Prefetch,
+        [ValidateRange(1,10000000)] [int]$MaxSteps = 1400,
         [int]$Seed = 42,
         [string]$Workspace
     )
 
-    $arguments = @("train", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--threads", $Threads, "--max-steps", $MaxSteps, "--seed", $Seed)
+    $arguments = @("train", $Dataset, "--execution", $Execution, "--backend", $Backend, "--data-mode", $DataMode, "--checkpoint-resume", $CheckpointResume, "--checkpoint-final", $CheckpointFinal, "--checkpoint-rollback", $CheckpointRollback, "--validation-percent", $ValidationPercent, "--test-percent", $TestPercent, "--cpu", $Cpu, "--ram", $Ram, "--gpu", $Gpu, "--max-steps", $MaxSteps, "--seed", $Seed)
     if ($Target) { $arguments += @("--target", $Target) }
     if ($GroupColumn) { $arguments += @("--group-column", $GroupColumn) }
     if ($PSBoundParameters.ContainsKey("ChunkTargetRecords")) { $arguments += @("--chunk-target-records", $ChunkTargetRecords) }
     if ($PSBoundParameters.ContainsKey("ChunkMinimumRecords")) { $arguments += @("--chunk-minimum-records", $ChunkMinimumRecords) }
     if ($PSBoundParameters.ContainsKey("ChunkMaximumRecords")) { $arguments += @("--chunk-maximum-records", $ChunkMaximumRecords) }
+    if ($PSBoundParameters.ContainsKey("Threads")) { $arguments += @("--threads", $Threads) }
+    if ($PSBoundParameters.ContainsKey("DataWorkers")) { $arguments += @("--data-workers", $DataWorkers) }
+    if ($PSBoundParameters.ContainsKey("Prefetch")) { $arguments += @("--prefetch", $Prefetch) }
     if ($PSCmdlet.ShouldProcess($Dataset, "Train Kernelyra model")) {
         Invoke-KernelyraJson -Workspace $Workspace -Arguments $arguments
     }
